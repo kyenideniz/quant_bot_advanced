@@ -363,64 +363,103 @@ def run_main_logic():
     state = get_state()
     if not state: return "DB Error"
 
-    # 2. Rebalance Check (New Month?)
+    # 1. Clean up "Orphaned" Positions (Fixing the bug I mentioned earlier)
+    # If we own a stock that is NO LONGER in our config/top 12, we must monitor it to sell it.
+    active_tickers = list(state.get('config', {}).keys())
+    held_tickers = list(state.get('positions', {}).keys())
+    
+    # We want to check ALL tickers we care about (Active targets + Stocks we currently own)
+    all_monitored_tickers = list(set(active_tickers + held_tickers))
+
+    # 2. Rebalance Check
     last_reb_str = state.get('last_rebalance', '2020-01-01')
     last_reb = datetime.strptime(last_reb_str, "%Y-%m-%d")
     if datetime.now().month != last_reb.month:
         state = run_monthly_rebalance(state)
+        # Refresh active tickers after rebalance
+        active_tickers = list(state.get('config', {}).keys())
+        all_monitored_tickers = list(set(active_tickers + held_tickers))
 
     # 3. Equity Calc
     total_equity = state['cash']
-    active_tickers = list(state.get('config', {}).keys())
-    
-    if not active_tickers:
-        state = run_monthly_rebalance(state)
-        active_tickers = list(state.get('config', {}).keys())
-
-    for ticker in active_tickers:
-        pos = state['positions'].get(ticker, {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0})
-        state['positions'][ticker] = pos
+    for ticker in held_tickers:
+        pos = state['positions'][ticker]
         if pos['shares'] > 0:
             total_equity += (pos['shares'] * pos['entry_price'])
 
     # 4. Trading Loop
-    for ticker in active_tickers:
+    for ticker in all_monitored_tickers:
+        # Download data (Need enough data for ATR calculation)
         df = retry_download(ticker, "200d")
-        if df is None: continue
+        if df is None or len(df) < 20: continue
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(1)
         
         price = df['Close'].iloc[-1]
-        params = state['config'][ticker]
         
-        pos = state['positions'][ticker]
-        signal = "HOLD"
-        
-        # Real-time equity update
-        if pos['shares'] > 0:
-            total_equity -= (pos['shares'] * pos['entry_price'])
-            total_equity += (pos['shares'] * price)
+        # Get Position Info
+        pos = state['positions'].get(ticker, {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0})
+        state['positions'][ticker] = pos # Ensure it exists in DB
 
+        # --- DYNAMIC EXIT CALCULATIONS ---
+        # 1. Get Params (If orphan, use default fallback)
+        params = state['config'].get(ticker, {'Entry': 55, 'Exit': 20, 'Target': 0.0})
+        
+        # 2. Calculate Indicators
         hist_high = df['High'].iloc[:-1].rolling(params['Entry']).max().iloc[-1]
         hist_low = df['Low'].iloc[:-1].rolling(params['Exit']).min().iloc[-1]
         
-        if pos['status'] == "NEUTRAL" and price > hist_high: signal = "BUY"
-        elif pos['status'] == "LONG" and price < hist_low: signal = "SELL"
+        # 3. Calculate ATR (Volatility)
+        current_atr = get_atr(df, window=14)
+        
+        signal = "HOLD"
 
-        target_val = total_equity * params['Target']
+        # --- SIGNAL LOGIC ---
+        
+        # BUY SIGNAL
+        if pos['status'] == "NEUTRAL" and ticker in active_tickers:
+            if price > hist_high: 
+                signal = "BUY"
+
+        # SELL SIGNAL (Long Position)
+        elif pos['status'] == "LONG":
+            # A. Dynamic Take Profit (3x Volatility)
+            # We calculate the target relative to our ENTRY price
+            dynamic_target = pos['entry_price'] + (2.5 * current_atr)
+            
+            # B. Stop Loss (Breakdown of N-day Low)
+            stop_loss = hist_low
+
+            if price >= dynamic_target:
+                signal = "SELL"
+                log_event(state, f"💰 TAKE PROFIT: {ticker} hit dynamic target ${dynamic_target:.2f}")
+            
+            elif price < stop_loss:
+                signal = "SELL"
+                log_event(state, f"📉 STOP LOSS: {ticker} broke {params['Exit']}-day low")
+
+        # --- EXECUTION ---
+        target_allocation = params.get('Target', 0.0) if ticker in active_tickers else 0.0
+        target_val = total_equity * target_allocation
         
         if signal == "BUY" and state['cash'] > 0:
             shares = target_val / price
             cost = shares * price * (1.001)
             if cost < state['cash'] and shares > 0:
                 state['cash'] -= cost
-                state['positions'][ticker] = {'status': 'LONG', 'shares': shares, 'entry_price': price}
-                log_event(state, f"BUY {ticker} (Target: {params['Target']*100:.1f}%)")
+                state['positions'][ticker] = {
+                    'status': 'LONG', 
+                    'shares': shares, 
+                    'entry_price': price,
+                    'atr_at_entry': current_atr  # SAVE VOLATILITY FOR LATER ANALYSIS
+                }
+                log_event(state, f"BUY {ticker} @ ${price:.2f} (Targeting: ${price + (3*current_atr):.2f})")
 
-        elif signal == "SELL":
+        elif signal == "SELL" and pos['shares'] > 0:
             rev = pos['shares'] * price * (0.999)
             state['cash'] += rev
+            # Reset position but keep key in dict to prevent key errors
             state['positions'][ticker] = {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0}
-            log_event(state, f"SELL {ticker}")
+            log_event(state, f"CLOSED {ticker} @ ${price:.2f}")
 
     save_state(state)
     return "Logic Executed"

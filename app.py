@@ -41,9 +41,9 @@ except:
     db = None
 
 # --- CONSTANTS ---
-INITIAL_CAPITAL = 100000.0   
+INITIAL_CAPITAL = 100000.0
 RISK_PER_TRADE = 0.02
-COMMISSION_RATE = 0.001 
+COMMISSION_RATE = 0.001
 COLLECTION_NAME = "trading_bot"
 DOC_NAME = "portfolio_state_advanced"
 TAKE_PROFIT_PERCENT = 0.20 # Added in previous step, keep for context

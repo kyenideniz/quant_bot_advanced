@@ -48,9 +48,9 @@ COLLECTION_NAME = "trading_bot"
 DOC_NAME = "portfolio_state_advanced"
 TAKE_PROFIT_PERCENT = 0.20 # Added in previous step, keep for context
 MACRO_ASSETS = [
-    'BTC-USD', 'ETH-USD', 'SOL-USD',  # Crypto
-    'GLD', 'SLV', 'USO', 'GDX',       # Commodities
-    'TLT', 'UUP'                      # Bonds/Dollar
+    'BTC-USD', 'ETH-USD', 'SOL-USD',  # Crypto
+    'GLD', 'SLV', 'USO', 'GDX',       # Commodities
+    'TLT', 'UUP'                      # Bonds/Dollar
 ]
 
 # --- HELPER FUNCTIONS (Cloud Only) ---
@@ -107,12 +107,12 @@ def log_event(state, msg):
     state['logs'].append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {msg}")
 
 def retry_download(tickers, period):
-    try:
-        # Group_by ticker ensures consistent format
-        df = yf.download(tickers, period=period, interval="1d", progress=False, group_by='ticker', auto_adjust=True)
-        if df.empty: return None
-        return df
-    except: return None
+    try:
+        # Group_by ticker ensures consistent format
+        df = yf.download(tickers, period=period, interval="1d", progress=False, group_by='ticker', auto_adjust=True)
+        if df.empty: return None
+        return df
+    except: return None
 
 def is_trading_hour():
     # Production: Uncomment lines below
@@ -180,90 +180,136 @@ def get_fresh_universe():
     return list(set(tickers))
 
 def get_portfolio_data(state):
-    """
-    Fetches live prices for holdings and calculates real-time P&L metrics.
-    """
-    # Identify all tickers to fetch: owned stocks + all macro assets (for efficiency)
-    held_tickers = [t for t, p in state['positions'].items() if p['shares'] > 0]
-    tickers_to_fetch = list(set(held_tickers + MACRO_ASSETS))
-    
-    if not tickers_to_fetch:
-        return {
-            "TotalEquity": state['cash'],
-            "MarketValue": 0.0,
-            "TotalGainLoss": 0.0,
-            "OverallReturnPct": 0.0,
-            "PositionDetails": state['positions']
-        }
+    """
+    Fetches live prices for holdings and calculates real-time P&L metrics.
+    """
+    # Identify all tickers to fetch: owned stocks + all macro assets (for efficiency)
+    held_tickers = [t for t, p in state['positions'].items() if p.get('shares', 0) > 0]
+    tickers_to_fetch = list(set(held_tickers + MACRO_ASSETS))
+    
+    if not tickers_to_fetch:
+        return {
+            "TotalEquity": state['cash'],
+            "MarketValue": 0.0,
+            "TotalGainLoss": 0.0,
+            "OverallReturnPct": 0.0,
+            "PositionDetails": state['positions']
+            }
 
-    # Fetch the latest price data
-    data = yf.download(tickers_to_fetch, period="1d", interval="1d", progress=False, group_by='ticker', auto_adjust=True)
-    if data is None or data.empty:
-        print("⚠️ Failed to fetch live price data.")
-        return None
+    # Fetch the latest price data (Using 5d just in case last day is missing/NaN)
+    data = yf.download(tickers_to_fetch, period="5d", interval="1d", progress=False, group_by='ticker', auto_adjust=True)
+    if data is None or data.empty:
+        print("⚠️ Failed to fetch live price data.")
+        # FALLBACK: If data fetch fails, we MUST use the entry price to calculate total cost basis for the summary
+        market_value_fallback = sum(p['shares'] * p['entry_price'] for p in state['positions'].values() if p.get('shares', 0) > 0)
+        return {
+            "TotalEquity": state['cash'] + market_value_fallback,
+            "MarketValue": market_value_fallback,
+            "TotalGainLoss": 0.0, # Cannot calculate P&L without a live price
+            "OverallReturnPct": 0.0,
+            "PositionDetails": state['positions'] # Return original positions
+        }
 
-    # Extract latest closing prices
-    live_prices = {}
-    for ticker in tickers_to_fetch:
-        try:
-            # Handle multi-index for multiple tickers
-            price_col = data[ticker]['Close'] if isinstance(data.columns, pd.MultiIndex) else data['Close']
-            live_prices[ticker] = price_col.iloc[-1]
-        except:
-            # Use NaN if price couldn't be fetched
-            live_prices[ticker] = np.nan
-    
-    # --- CALCULATE METRICS ---
-    total_market_value = 0.0
-    total_cost_basis = 0.0
-    enhanced_positions = {}
-    
-    for ticker, pos in state['positions'].items():
-        
-        current_price = live_prices.get(ticker)
-        cost_basis = pos['shares'] * pos['entry_price']
-        
-        # Start with the base position data
-        details = pos.copy()
-        
-        if pos['shares'] > 0 and not np.isnan(current_price):
-            current_value = pos['shares'] * current_price
-            gain_loss = current_value - cost_basis
-            pct_return = (gain_loss / cost_basis) * 100 if cost_basis > 0 else 0.0
-            
-            # Update running totals
-            total_market_value += current_value
-            total_cost_basis += cost_basis
-            
-            # Add new calculated fields
-            details['current_price'] = round(current_price, 3)
-            details['total_cost_basis'] = round(cost_basis, 3)
-            details['current_value'] = round(current_value, 3)
-            details['gain_loss'] = round(gain_loss, 3)
-            details['return_pct'] = round(pct_return, 2)
-        else:
-            # For neutral positions, just show 0
-            details['current_price'] = round(current_price, 3) if not np.isnan(current_price) else None
-            details['total_cost_basis'] = 0.0
-            details['current_value'] = 0.0
-            details['gain_loss'] = 0.0
-            details['return_pct'] = 0.0
-            
-        enhanced_positions[ticker] = details
+    # Extract latest valid closing prices (FIX 1: Robust price extraction)
+    live_prices = {}
+    for ticker in tickers_to_fetch:
+        try:
+            if isinstance(data.columns, pd.MultiIndex):
+                if ticker in data.columns.get_level_values(0):
+                    # Find the last valid close price (robust to market closures or missing data)
+                    price = data[ticker]['Close'].dropna().iloc[-1]
+                else:
+                    price = np.nan
+            else:
+                # Handle single ticker case (not typical but safe)
+                price = data['Close'].dropna().iloc[-1]
+            
+            if np.isfinite(price):
+                live_prices[ticker] = price
+            else:
+                live_prices[ticker] = np.nan
 
-    total_equity = state['cash'] + total_market_value
-    total_gain_loss = total_market_value - total_cost_basis
-    
-    # Assuming INITIAL_CAPITAL is the baseline for overall return
-    # If total_cost_basis is 0, we can't calculate P&L, so use Initial Capital for a rough check
-    overall_return_pct = (total_equity / INITIAL_CAPITAL - 1) * 100
-    
-    return {
-        "TotalEquity": round(total_equity, 3),
-        "MarketValue": round(total_market_value, 3),
-        "TotalGainLoss": round(total_gain_loss, 3),
-        "OverallReturnPct": round(overall_return_pct, 2),
-        "PositionDetails": enhanced_positions
+        except (KeyError, IndexError):
+            live_prices[ticker] = np.nan
+        except Exception as e:
+            print(f"⚠️ Error extracting price for {ticker}: {e}")
+            live_prices[ticker] = np.nan
+
+
+    # --- CALCULATE METRICS ---
+    total_market_value = 0.0
+    total_cost_basis = 0.0 # This now tracks total cost basis for ALL positions
+    enhanced_positions = {}
+
+    for ticker, pos in state['positions'].items():
+        
+        # Robustly get the price, defaulting to NaN if key is missing
+        current_price = live_prices.get(ticker, np.nan)
+        
+        shares = pos.get('shares', 0)
+        entry_price = pos.get('entry_price', 0)
+        cost_basis = shares * entry_price
+        
+        # Start with the base position data, ensuring keys exist
+        details = pos.copy()
+        details['shares'] = shares
+        details['entry_price'] = entry_price
+        details['total_cost_basis'] = round(cost_basis, 3) # Basis is always known
+
+        # FIX 2: Check for shares > 0 AND a valid price
+        if shares > 0 and np.isfinite(current_price):
+            current_value = shares * current_price
+            gain_loss = current_value - cost_basis
+            pct_return = (gain_loss / cost_basis) * 100 if cost_basis > 0 else 0.0
+            
+            # Update running totals
+            total_market_value += current_value
+            total_cost_basis += cost_basis
+            
+            # Add new calculated fields
+            details['current_price'] = round(current_price, 3)
+            details['current_value'] = round(current_value, 3)
+            details['gain_loss'] = round(gain_loss, 3)
+            details['return_pct'] = round(pct_return, 2)
+            details['status'] = 'LONG' # Ensure status is correct if shares > 0
+        
+        elif shares > 0 and not np.isfinite(current_price):
+            # Shares > 0 but price is missing (e.g., market closed/no data).
+            # We must use cost basis for market value until a price is available.
+            details['current_price'] = None
+            details['current_value'] = round(cost_basis, 3)
+            details['gain_loss'] = 0.0
+            details['return_pct'] = 0.0
+            details['status'] = 'LONG'
+            
+            # Crucially, still add to running totals using cost basis as a proxy for Market Value
+            total_market_value += cost_basis
+            total_cost_basis += cost_basis
+            
+        else: # Shares == 0 or position is NEUTRAL
+            # Use None for current price for NEUTRAL positions
+            details['current_price'] = None
+            details['current_value'] = 0.0
+            details['gain_loss'] = 0.0
+            details['return_pct'] = 0.0
+            details['status'] = 'NEUTRAL'
+            
+        enhanced_positions[ticker] = details
+
+    # FIX 3: Total P&L is Market Value MINUS Total Cost Basis
+    total_gain_loss = total_market_value - total_cost_basis
+    total_equity = state['cash'] + total_market_value
+
+    # Overall return based on total equity change from initial capital
+    # Use robust checks for division by zero
+    overall_return_pct = (total_equity / INITIAL_CAPITAL - 1) * 100 if INITIAL_CAPITAL > 0 else 0.0
+
+    return {
+        "TotalEquity": round(total_equity, 3),
+        "MarketValue": round(total_market_value, 3),
+        "TotalGainLoss": round(total_gain_loss, 3),
+        "OverallReturnPct": round(overall_return_pct, 2),
+        "PositionDetails": enhanced_positions
 }
     
 # --- 🧠 HRP & OPTIMIZATION MATH ---
@@ -566,44 +612,44 @@ def get_atr(df, window=14):
 
 @app.route('/')
 def home():
-    # 1. Get the base state from Firebase
-    base_state = get_state()
-    if not base_state: return jsonify({"status": "error", "msg": "Failed to retrieve database state."})
+    # 1. Get the base state from Firebase
+    base_state = get_state()
+    if not base_state: return jsonify({"status": "error", "msg": "Failed to retrieve database state."})
 
-    # 2. Get the real-time performance data
-    perf_data = get_portfolio_data(base_state)
-    if not perf_data: return jsonify({"status": "error", "msg": "Failed to fetch live market data."})
+    # 2. Get the real-time performance data
+    perf_data = get_portfolio_data(base_state)
+    if not perf_data: return jsonify({"status": "error", "msg": "Failed to fetch live market data."})
 
-    # 3. Combine and restructure the output
-    
-    # Update the cash and positions in the base state with calculated values
-    output = base_state.copy()
-    output['positions'] = perf_data['PositionDetails']
-    output['cash'] = round(output['cash'], 3) # Clean up cash formatting
-    
-    # Insert the new overall summary data at the top for organization
-    final_output = {
-        "PORTFOLIO_SUMMARY": {
-            "Cash": output['cash'],
-            "Market Value": perf_data['MarketValue'],
-            "Total Equity (Cash + Holdings)": perf_data['TotalEquity'],
-            "Total P&L (Gain/Loss)": perf_data['TotalGainLoss'],
-            "Overall Return (%)": perf_data['OverallReturnPct']
-        },
-        **output
-    }
-    
-    # Remove redundant data (like old cash) after moving to summary
-    del final_output['cash'] 
-    
-    try: return jsonify(final_output)
-    except: return jsonify({"status":"error"})
+    # 3. Combine and restructure the output
+
+    # Update the cash and positions in the base state with calculated values
+    output = base_state.copy()
+    output['positions'] = perf_data['PositionDetails']
+    output['cash'] = round(output['cash'], 3) # Clean up cash formatting
+
+    # Insert the new overall summary data at the top for organization
+    final_output = {
+        "PORTFOLIO_SUMMARY": {
+        "Cash": output['cash'],
+        "Market Value": perf_data['MarketValue'],
+        "Total Equity (Cash + Holdings)": perf_data['TotalEquity'],
+        "Total P&L (Gain/Loss)": perf_data['TotalGainLoss'],
+        "Overall Return (%)": perf_data['OverallReturnPct']
+        },
+        **output
+    }
+
+    # Remove redundant data (like old cash) after moving to summary
+    del final_output['cash'] 
+
+    try: return jsonify(final_output)
+    except: return jsonify({"status":"error"})
 
 @app.route('/run')
 def execute():
-    try: return jsonify({"status": "success", "msg": run_main_logic()})
-    except Exception as e: return jsonify({"status": "error", "msg": str(e)})
+    try: return jsonify({"status": "success", "msg": run_main_logic()})
+    except Exception as e: return jsonify({"status": "error", "msg": str(e)})
 
 if __name__ == '__main__':
-    # Use port 5001 to avoid conflict with macOS AirPlay
-    app.run(debug=True, port=5001)
+    # Use port 5001 to avoid conflict with macOS AirPlay
+     app.run(debug=True, port=5001)

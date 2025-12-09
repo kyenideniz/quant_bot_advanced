@@ -116,7 +116,7 @@ def retry_download(tickers, period):
 
 def is_trading_hour():
     # Production: Uncomment lines below
-    #  return True
+    return True
     import pytz
     nyc = pytz.timezone('America/New_York')
     now = datetime.now(nyc)

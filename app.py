@@ -17,7 +17,15 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.options.mode.chained_assignment = None
 
 app = Flask(__name__)
-app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True  # For older Flask versions
+try:
+    app.json.compact = False                      # For Flask 2.3+ (Newer versions)
+except AttributeError:
+    pass
+
+# 2. Disable default sorting (Respects our numbering 1, 2, 3...)
+app.config['JSON_SORT_KEYS'] = False
+app.config['JSONIFY_SORT_KEYS'] = False
 
 # --- FIREBASE SETUP ---
 if not firebase_admin._apps:
@@ -177,7 +185,7 @@ def retry_download(tickers, period):
 
 def is_trading_hour():
     # Production: Uncomment below
-    return True 
+    # return True 
     nyc = pytz.timezone('America/New_York')
     now = datetime.now(nyc)
     if now.weekday() >= 5: return False 

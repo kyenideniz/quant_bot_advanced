@@ -519,8 +519,8 @@ def home():
     output = base_state.copy()
     output['positions'] = perf_data['PositionDetails'] # Now contains your numbered 01. Status, etc.
 
-    return_on_bought = perf_data['TotalGainLoss'] * 100 / (100000 - pos.get('cash',0))
-        
+    return_on_bought = perf_data['TotalGainLoss'] * 100 / (100000 - output['cash'])
+
     # 2. Number the Portfolio Summary Keys
     final_output = {
         "PORTFOLIO_SUMMARY": {

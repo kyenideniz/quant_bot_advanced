@@ -232,7 +232,7 @@ def get_portfolio_data(state):
         shares = pos.get('shares', 0)
         entry_price = pos.get('entry_price', 0)
         cost_basis = shares * entry_price
-        
+
         # --- ORDERING THE POSITION DETAILS ---
         # We create a new dict with Numbered Keys for the View
         details = {} 
@@ -518,15 +518,18 @@ def home():
     # 1. Prepare Base Output
     output = base_state.copy()
     output['positions'] = perf_data['PositionDetails'] # Now contains your numbered 01. Status, etc.
-    
+
+    return_on_bought = perf_data['TotalGainLoss'] * 100 / (100000 - pos.get('cash',0))
+        
     # 2. Number the Portfolio Summary Keys
     final_output = {
         "PORTFOLIO_SUMMARY": {
             "1. Overall Return (%)": perf_data['OverallReturnPct'],
-            "2. Total Equity": perf_data['TotalEquity'],
-            "3. Total P&L": perf_data['TotalGainLoss'],
-            "4. Market Value": perf_data['MarketValue'],
-            "5. Cash": round(output['cash'], 3)
+            "2. Return on Bought Assets (%)" : round(return_on_bought, 2),
+            "3. Total Equity": perf_data['TotalEquity'],
+            "4. Total P&L": perf_data['TotalGainLoss'],
+            "5. Market Value": perf_data['MarketValue'],
+            "6. Cash": round(output['cash'], 2)
         },
         **output
     }

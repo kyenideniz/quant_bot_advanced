@@ -478,6 +478,7 @@ def run_main_logic():
         exit_reason = ""
 
         # === SIGNALS ===
+        # === SIGNALS ===
         if pos['status'] == "NEUTRAL" and ticker in active_tickers:
             if price > hist_high: signal = "BUY"
 
@@ -485,42 +486,46 @@ def run_main_logic():
             highest = pos.get('highest_price', price)
             entry = pos.get('entry_price', price)
 
-            # --- UPDATED PROFITABLE LOGIC ---
-            
+            # 1. CALCULATE THE "RAW" STOP PRICE (Wide Logic)
+            stop_price = 0.0
+            raw_exit_reason = ""
+
             if market_regime == "THE GRIND":
-                # OLD: 2.0 * ATR (Too tight)
-                # NEW: 3.5 * ATR (Room to breathe)
-                if price < highest - (3.5 * current_atr):
-                    signal = "SELL"; exit_reason = "Grind End (Trail 3.5)"
-            
+                stop_price = highest - (3.5 * current_atr)
+                raw_exit_reason = "Grind End (Trail 3.5)"
+
             elif market_regime == "THE EXPLOSION":
-                # OLD: 4.0 * ATR
-                # NEW: 5.0 * ATR (Catch the mega-trend)
-                if price < highest - (5.0 * current_atr):
-                    signal = "SELL"; exit_reason = "Explosion Rev (Trail 5.0)"
-            
+                stop_price = highest - (5.0 * current_atr)
+                raw_exit_reason = "Explosion Rev (Trail 5.0)"
+
             elif market_regime == "THE CHANNEL":
-                # REMOVED: "Channel Scalp Win" (Never cap your upside!)
-                # KEPT: Stop Loss protection
-                if price <= entry - (1.5 * current_atr):
-                    signal = "SELL"; exit_reason = "Channel Stop Hit"
-            
+                stop_price = entry - (1.5 * current_atr)
+                raw_exit_reason = "Channel Stop Hit"
+
             elif market_regime == "DANGER ZONE":
-                # Keep tight leash here, volatility is bad without trend
-                if price < highest - (2.0 * current_atr):
-                    signal = "SELL"; exit_reason = "Danger Zone Exit"
+                stop_price = highest - (2.0 * current_atr)
+                raw_exit_reason = "Danger Zone Exit"
+            
+            else:
+                stop_price = highest - (2.0 * current_atr) 
+                raw_exit_reason = "Fallback Stop"
 
-            # 2. THE BREAKEVEN RATCHET (The "Don't Lose Money" Rule)
-            # If the calculated stop is BELOW entry, but we are currently profitable...
-            # We force the stop to be at least the Entry Price (plus a tiny buffer).
-            if stop_price < entry and price > (entry + current_atr):
+            # 2. THE BREAKEVEN RATCHET (>7% Profit Rule)
+            # Logic: If the Wide Stop is still dangerous (below Entry),
+            # AND we have secured a solid >7% profit...
+            # Then force the stop up to Entry Price. 
+            
+            final_exit_reason = raw_exit_reason
+            current_return = (price - entry) / entry  # e.g., 0.08 for 8%
+            
+            if stop_price < entry and current_return > 0.07:
                 stop_price = entry + (0.1 * current_atr) # Sell slightly above entry to cover fees
-                sell_reason = "Breakeven Stop Hit"
+                final_exit_reason = "Breakeven Stop Hit (>7% Rule)"
 
-            # 3. Execution Trigger
+            # 3. EXECUTION TRIGGER
             if price < stop_price:
                 signal = "SELL"
-                exit_reason = sell_reason
+                exit_reason = final_exit_reason
 
         # === EXECUTION ===
         if signal == "BUY" and state['cash'] > 0:

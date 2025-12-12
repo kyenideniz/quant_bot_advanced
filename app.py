@@ -206,10 +206,8 @@ def get_portfolio_data(state):
             "PositionDetails": state['positions']
         }
 
-    # 2. Fetch Live Prices & History (History needed for Regime/ATR)
-    # We fetch 100 days to ensure we have enough data for ATR and Regime calcs
+    # 2. Fetch Live Prices & History
     data = retry_download(tickers_to_fetch, "100d")
-    live_prices = {}
     
     # 3. Calculate Metrics & Format Positions
     total_market_value = 0.0
@@ -237,43 +235,44 @@ def get_portfolio_data(state):
             total_market_value += current_value
             total_cost_basis += cost_basis
             
-            # --- NEW: CALCULATE REGIME & STOP PRICE FOR VIEW ---
-            # 1. Get Config for this asset
+            # --- CALCULATE METRICS ---
             conf = state['config'].get(ticker, {})
             r_period = conf.get('RegimePeriod', 20)
             r_thresh = conf.get('RegimeThresh', 0.25)
             
-            # 2. Calculate Live Metrics
             atr = get_atr(df)
             regime = get_regime(df, period=r_period, threshold=r_thresh)
             highest = pos.get('highest_price', current_price)
             
-            # 3. Calculate Dynamic Stop Level (Using your NEW multipliers)
+            # Calculate Stop Level
             stop_price = 0.0
             if regime == "THE GRIND":      stop_price = highest - (3.5 * atr)
             elif regime == "THE EXPLOSION": stop_price = highest - (5.0 * atr)
             elif regime == "THE CHANNEL":   stop_price = entry_price - (1.5 * atr)
             elif regime == "DANGER ZONE":   stop_price = highest - (2.0 * atr)
             
-            # 4. Calculate Distance to Stop
+            # Breakeven Visualization (Optional: Does not affect logic, just view)
+            if stop_price < entry_price and current_price > (entry_price + atr):
+                 stop_price = entry_price + (0.1 * atr)
+
             dist_pct = ((current_price - stop_price) / current_price) * 100
             
             # --- POPULATE DASHBOARD KEYS ---
-            # Existing Keys
             details['01. Return %'] = round(((current_value - cost_basis) / cost_basis) * 100, 2)
             details['02. Gain/Loss'] = round(current_value - cost_basis, 2)
             details['03. Current Price'] = round(current_price, 2)
             
-            # NEW KEYS (The visibility you asked for)
             details['04. Stop Price'] = round(stop_price, 2)
-            details['05. Risk Cushion'] = f"{round(dist_pct, 1)}%"
-            details['06. Market Regime'] = regime
-            details['07. Current ATR'] = round(atr, 2)
+            details['05. Entry Price'] = round(entry_price, 2)
+            details['06. Risk Cushion'] = f"{round(dist_pct, 1)}%"
+            details['07. Market Regime'] = regime
             
-            # Info Keys
             details['08. Shares'] = round(shares, 4)
             details['09. Highest Price'] = round(highest, 2)
             details['10. Status'] = 'LONG'
+            
+            # --- NEW: ENTRY PRICE ---
+            details['11. Cost Basis'] = round(cost_basis, 2)
 
         else:
             details['01. Status'] = 'NEUTRAL'
@@ -510,6 +509,18 @@ def run_main_logic():
                 # Keep tight leash here, volatility is bad without trend
                 if price < highest - (2.0 * current_atr):
                     signal = "SELL"; exit_reason = "Danger Zone Exit"
+
+            # 2. THE BREAKEVEN RATCHET (The "Don't Lose Money" Rule)
+            # If the calculated stop is BELOW entry, but we are currently profitable...
+            # We force the stop to be at least the Entry Price (plus a tiny buffer).
+            if stop_price < entry and price > (entry + current_atr):
+                stop_price = entry + (0.1 * current_atr) # Sell slightly above entry to cover fees
+                sell_reason = "Breakeven Stop Hit"
+
+            # 3. Execution Trigger
+            if price < stop_price:
+                signal = "SELL"
+                exit_reason = sell_reason
 
         # === EXECUTION ===
         if signal == "BUY" and state['cash'] > 0:

@@ -206,56 +206,75 @@ def get_portfolio_data(state):
             "PositionDetails": state['positions']
         }
 
-    # 2. Fetch Live Prices
-    data = retry_download(tickers_to_fetch, "5d")
+    # 2. Fetch Live Prices & History (History needed for Regime/ATR)
+    # We fetch 100 days to ensure we have enough data for ATR and Regime calcs
+    data = retry_download(tickers_to_fetch, "100d")
     live_prices = {}
     
-    if data is not None and not data.empty:
-        for ticker in tickers_to_fetch:
-            try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    if ticker in data.columns.get_level_values(0):
-                        price = data[ticker]['Close'].dropna().iloc[-1]
-                    else: price = np.nan
-                else:
-                    price = data['Close'].dropna().iloc[-1]
-                live_prices[ticker] = price if np.isfinite(price) else np.nan
-            except: live_prices[ticker] = np.nan
-
     # 3. Calculate Metrics & Format Positions
     total_market_value = 0.0
     total_cost_basis = 0.0
     enhanced_positions = {}
 
     for ticker, pos in state['positions'].items():
-        current_price = live_prices.get(ticker, np.nan)
+        # -- Get Price Data --
+        try:
+            df = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
+            df = df.dropna()
+            current_price = df['Close'].iloc[-1]
+        except:
+            current_price = pos.get('entry_price', 0)
+            df = pd.DataFrame() # Empty if failed
+
         shares = pos.get('shares', 0)
         entry_price = pos.get('entry_price', 0)
         cost_basis = shares * entry_price
 
-        # --- ORDERING THE POSITION DETAILS ---
-        # We create a new dict with Numbered Keys for the View
         details = {} 
 
-        if shares > 0:
-            price_used = current_price if np.isfinite(current_price) else entry_price
-            current_value = shares * price_used
-            
+        if shares > 0 and not df.empty:
+            current_value = shares * current_price
             total_market_value += current_value
             total_cost_basis += cost_basis
             
-            # NUMBERED KEYS (This sorts them in your JSON view)
-            details['08. Status'] = 'LONG'
-            details['07. Shares'] = round(shares, 4)
-            details['03. Entry Price'] = round(entry_price, 2)
-            details['04. Current Price'] = round(price_used, 2)
-            details['05. Cost Basis'] = round(cost_basis, 2)
-            details['06. Current Value'] = round(current_value, 2)
-            details['02. Gain/Loss'] = round(current_value - cost_basis, 2)
-            details['01. Return %'] = round(((current_value - cost_basis) / cost_basis) * 100, 2)
+            # --- NEW: CALCULATE REGIME & STOP PRICE FOR VIEW ---
+            # 1. Get Config for this asset
+            conf = state['config'].get(ticker, {})
+            r_period = conf.get('RegimePeriod', 20)
+            r_thresh = conf.get('RegimeThresh', 0.25)
             
-            # Keep raw data hidden if you want, or include it at the bottom
-            # We don't need raw keys for the view, just the numbered ones.
+            # 2. Calculate Live Metrics
+            atr = get_atr(df)
+            regime = get_regime(df, period=r_period, threshold=r_thresh)
+            highest = pos.get('highest_price', current_price)
+            
+            # 3. Calculate Dynamic Stop Level (Using your NEW multipliers)
+            stop_price = 0.0
+            if regime == "THE GRIND":      stop_price = highest - (3.5 * atr)
+            elif regime == "THE EXPLOSION": stop_price = highest - (5.0 * atr)
+            elif regime == "THE CHANNEL":   stop_price = entry_price - (1.5 * atr)
+            elif regime == "DANGER ZONE":   stop_price = highest - (2.0 * atr)
+            
+            # 4. Calculate Distance to Stop
+            dist_pct = ((current_price - stop_price) / current_price) * 100
+            
+            # --- POPULATE DASHBOARD KEYS ---
+            # Existing Keys
+            details['01. Return %'] = round(((current_value - cost_basis) / cost_basis) * 100, 2)
+            details['02. Gain/Loss'] = round(current_value - cost_basis, 2)
+            details['03. Current Price'] = round(current_price, 2)
+            
+            # NEW KEYS (The visibility you asked for)
+            details['04. Stop Price'] = round(stop_price, 2)
+            details['05. Risk Cushion'] = f"{round(dist_pct, 1)}%"
+            details['06. Market Regime'] = regime
+            details['07. Current ATR'] = round(atr, 2)
+            
+            # Info Keys
+            details['08. Shares'] = round(shares, 4)
+            details['09. Highest Price'] = round(highest, 2)
+            details['10. Status'] = 'LONG'
+
         else:
             details['01. Status'] = 'NEUTRAL'
             details['02. Shares'] = 0
@@ -266,7 +285,6 @@ def get_portfolio_data(state):
     total_pl = total_market_value - total_cost_basis
     overall_ret = ((total_equity / INITIAL_CAPITAL) - 1) * 100
 
-    # RETURN CLEAN KEYS HERE (So home() can read them)
     return {
         "TotalEquity": round(total_equity, 3),
         "MarketValue": round(total_market_value, 3),
@@ -468,19 +486,29 @@ def run_main_logic():
             highest = pos.get('highest_price', price)
             entry = pos.get('entry_price', price)
 
+            # --- UPDATED PROFITABLE LOGIC ---
+            
             if market_regime == "THE GRIND":
-                if price < highest - (2.0 * current_atr):
-                    signal = "SELL"; exit_reason = "Grind End (Trail 2.0)"
+                # OLD: 2.0 * ATR (Too tight)
+                # NEW: 3.5 * ATR (Room to breathe)
+                if price < highest - (3.5 * current_atr):
+                    signal = "SELL"; exit_reason = "Grind End (Trail 3.5)"
+            
             elif market_regime == "THE EXPLOSION":
-                if price < highest - (4.0 * current_atr):
-                    signal = "SELL"; exit_reason = "Explosion Rev (Trail 4.0)"
+                # OLD: 4.0 * ATR
+                # NEW: 5.0 * ATR (Catch the mega-trend)
+                if price < highest - (5.0 * current_atr):
+                    signal = "SELL"; exit_reason = "Explosion Rev (Trail 5.0)"
+            
             elif market_regime == "THE CHANNEL":
-                if price >= entry + (1.5 * current_atr):
-                    signal = "SELL"; exit_reason = "Channel Scalp Win"
-                elif price <= entry - (1.0 * current_atr):
+                # REMOVED: "Channel Scalp Win" (Never cap your upside!)
+                # KEPT: Stop Loss protection
+                if price <= entry - (1.5 * current_atr):
                     signal = "SELL"; exit_reason = "Channel Stop Hit"
+            
             elif market_regime == "DANGER ZONE":
-                if price < highest - (1.5 * current_atr):
+                # Keep tight leash here, volatility is bad without trend
+                if price < highest - (2.0 * current_atr):
                     signal = "SELL"; exit_reason = "Danger Zone Exit"
 
         # === EXECUTION ===

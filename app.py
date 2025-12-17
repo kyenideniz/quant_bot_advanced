@@ -194,7 +194,7 @@ def retry_download(tickers, period):
 
 def is_trading_hour():
     # Production: Uncomment below
-    # return True 
+    return True 
     nyc = pytz.timezone('America/New_York')
     now = datetime.now(nyc)
     if now.weekday() >= 5: return False 

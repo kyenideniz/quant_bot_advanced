@@ -151,6 +151,15 @@ def optimize_regime_params(df):
                 
     return int(final_p), round(final_t, 2)
 
+def get_rsi(df, window=14):
+    """Calculates the 14-day RSI."""
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.iloc[-1]
+
 # --- 2. HELPERS (DB, VIEW, DATA) ---
 
 def get_state():
@@ -252,8 +261,27 @@ def get_portfolio_data(state):
             elif regime == "DANGER ZONE":   stop_price = highest - (2.0 * atr)
             
             # Breakeven Visualization (Optional: Does not affect logic, just view)
-            if stop_price < entry_price and current_price > (entry_price + atr):
-                 stop_price = entry_price + (0.1 * atr)
+            # Inside get_portfolio_data(), replace the stop_price calculation:
+
+            # Calculate Stop Level for Dashboard Display
+            current_return = (current_price - entry_price) / entry_price
+            stop_price = 0.0
+            
+            if regime == "THE GRIND":
+                m = 1.5 if current_return > 0.10 else 3.5
+                stop_price = highest - (m * atr)
+            elif regime == "THE EXPLOSION":
+                if current_return > 0.15:   m = 1.5
+                elif current_return > 0.10: m = 2.5
+                else:                       m = 5.0
+                stop_price = highest - (m * atr)
+            elif regime == "THE CHANNEL":
+                stop_price = entry_price - (1.5 * atr)
+            else:
+                stop_price = highest - (2.0 * atr)
+
+            if stop_price < entry_price and current_return > 0.07:
+                stop_price = entry_price + (0.1 * atr)
 
             dist_pct = ((current_price - stop_price) / current_price) * 100
             
@@ -265,14 +293,15 @@ def get_portfolio_data(state):
             details['04. Stop Price'] = round(stop_price, 2)
             details['05. Entry Price'] = round(entry_price, 2)
             details['06. Risk Cushion'] = f"{round(dist_pct, 1)}%"
-            details['07. Market Regime'] = regime
+            details['07. Current Atr'] = round(atr, 2)
             
             details['08. Shares'] = round(shares, 4)
             details['09. Highest Price'] = round(highest, 2)
             details['10. Status'] = 'LONG'
+            details['11. Market Regime'] = regime
             
             # --- NEW: ENTRY PRICE ---
-            details['11. Cost Basis'] = round(cost_basis, 2)
+            details['13. Cost Basis'] = round(cost_basis, 2)
 
         else:
             details['01. Status'] = 'NEUTRAL'
@@ -434,16 +463,21 @@ def run_main_logic():
     held_tickers = list(state.get('positions', {}).keys())
     all_monitored_tickers = list(set(active_tickers + held_tickers))
 
+    # --- Monthly Rebalance Trigger ---
     last_reb = datetime.strptime(state.get('last_rebalance', '2020-01-01'), "%Y-%m-%d")
     if datetime.now().month != last_reb.month:
         state = run_monthly_rebalance(state)
         active_tickers = list(state.get('config', {}).keys())
         all_monitored_tickers = list(set(active_tickers + held_tickers))
 
+    # Calculate Total Equity for Sizing
     total_equity = state['cash']
     for ticker in held_tickers:
         pos = state['positions'][ticker]
-        if pos.get('shares', 0) > 0: total_equity += (pos['shares'] * pos['entry_price'])
+        if pos.get('shares', 0) > 0:
+            # Note: Using entry_price for a rough equity estimate; 
+            # Production could fetch live price here for better precision.
+            total_equity += (pos['shares'] * pos['entry_price'])
 
     for ticker in all_monitored_tickers:
         df = retry_download(ticker, "100d")
@@ -454,7 +488,6 @@ def run_main_logic():
         current_atr = get_atr(df, window=14)
         pos = state['positions'].get(ticker, {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0, 'highest_price': 0})
         
-        # Safe Config Loading
         existing_conf = state['config'].get(ticker, {})
         params = {
             'Entry': existing_conf.get('Entry', 55),
@@ -464,7 +497,7 @@ def run_main_logic():
             'RegimeThresh': existing_conf.get('RegimeThresh', 0.25)
         }
 
-        # Update Highest Price
+        # Update Highest Price for Trailing Stops
         if pos['status'] == 'LONG':
             if 'highest_price' not in pos or pos['highest_price'] == 0: 
                 pos['highest_price'] = pos['entry_price']
@@ -474,84 +507,113 @@ def run_main_logic():
 
         market_regime = get_regime(df, period=params['RegimePeriod'], threshold=params['RegimeThresh'])
         hist_high = df['High'].iloc[:-1].rolling(params['Entry']).max().iloc[-1]
+        
         signal = "HOLD"
         exit_reason = ""
 
-        # === SIGNALS ===
-        # === SIGNALS ===
-        if pos['status'] == "NEUTRAL" and ticker in active_tickers:
-            if price > hist_high: signal = "BUY"
+        # === 1. BUY / RE-ENTRY SIGNALS ===
+        # Fetch RSI for confirmation
+        current_rsi = get_rsi(df)
 
+        # BUY SIGNALS (Updated with RSI Filter)
+        if pos['status'] == "NEUTRAL" and ticker in active_tickers:
+            # A: Standard Breakout (No RSI needed, price is at a new 55-day high)
+            if price > hist_high: 
+                signal = "BUY"
+                reason = "Breakout"
+            
+            # B: Dip Re-entry (Requires RSI Confirmation)
+            elif regime in ["THE EXPLOSION", "THE GRIND"]:
+                pullback_zone = (price < hist_high * 0.98) and (price > hist_high * 0.92)
+                
+                # RSI Filter: Ensure we aren't buying while momentum is still crashing
+                # We want the 'Dip' but we want to see RSI showing signs of stabilization (e.g., > 30)
+                if pullback_zone and current_rsi > 35:
+                    signal = "BUY"
+                    reason = f"Confirmed Dip (RSI: {current_rsi:.1f})"
+                    
+        # === 2. SELL / PROFIT-TAKING SIGNALS ===
         elif pos['status'] == "LONG":
             highest = pos.get('highest_price', price)
             entry = pos.get('entry_price', price)
+            current_return = (price - entry) / entry
+            
+            # --- DYNAMIC MULTIPLIER (Lock in Silver Profit) ---
+            if market_regime == "THE EXPLOSION":
+                if current_return > 0.15:   m = 1.5 # Secure 15%+ gains
+                elif current_return > 0.10: m = 2.5 # Secure 10% gains
+                else:                       m = 5.0 # Default loose
+                stop_price = highest - (m * current_atr)
+                exit_reason = f"Explosion Trail ({m}x ATR)"
 
-            # 1. CALCULATE THE "RAW" STOP PRICE (Wide Logic)
-            stop_price = 0.0
-            raw_exit_reason = ""
-
-            if market_regime == "THE GRIND":
-                stop_price = highest - (3.5 * current_atr)
-                raw_exit_reason = "Grind End (Trail 3.5)"
-
-            elif market_regime == "THE EXPLOSION":
-                stop_price = highest - (5.0 * current_atr)
-                raw_exit_reason = "Explosion Rev (Trail 5.0)"
+            elif market_regime == "THE GRIND":
+                m = 1.5 if current_return > 0.10 else 3.5
+                stop_price = highest - (m * current_atr)
+                exit_reason = f"Grind Trail ({m}x ATR)"
 
             elif market_regime == "THE CHANNEL":
                 stop_price = entry - (1.5 * current_atr)
-                raw_exit_reason = "Channel Stop Hit"
+                exit_reason = "Channel Stop"
 
-            elif market_regime == "DANGER ZONE":
+            else: # DANGER ZONE / FALLBACK
                 stop_price = highest - (2.0 * current_atr)
-                raw_exit_reason = "Danger Zone Exit"
-            
-            else:
-                stop_price = highest - (2.0 * current_atr) 
-                raw_exit_reason = "Fallback Stop"
+                exit_reason = "Danger Zone Tight Stop"
 
-            # 2. THE BREAKEVEN RATCHET (>7% Profit Rule)
-            # Logic: If the Wide Stop is still dangerous (below Entry),
-            # AND we have secured a solid >7% profit...
-            # Then force the stop up to Entry Price. 
-            
-            final_exit_reason = raw_exit_reason
-            current_return = (price - entry) / entry  # e.g., 0.08 for 8%
-            
+            # Breakeven Ratchet (>7% Profit Rule)
             if stop_price < entry and current_return > 0.07:
-                stop_price = entry + (0.1 * current_atr) # Sell slightly above entry to cover fees
-                final_exit_reason = "Breakeven Stop Hit (>7% Rule)"
+                stop_price = entry + (0.1 * current_atr)
+                exit_reason = "Breakeven Guard (>7%)"
 
-            # 3. EXECUTION TRIGGER
             if price < stop_price:
                 signal = "SELL"
-                exit_reason = final_exit_reason
 
-        # === EXECUTION ===
+        # === 3. EXECUTION ===
         if signal == "BUY" and state['cash'] > 0:
             target_val = total_equity * params.get('Target', 0.0)
             shares = target_val / price
             cost = shares * price * 1.001
+            
             if cost < state['cash'] and shares > 0:
                 state['cash'] -= cost
                 state['positions'][ticker] = {
-                    'status': 'LONG', 'shares': shares, 'entry_price': price,
-                    'highest_price': price, 'atr_at_entry': current_atr
+                    'status': 'LONG', 
+                    'shares': shares, 
+                    'entry_price': price,
+                    'highest_price': price, 
+                    'atr_at_entry': current_atr
                 }
-                log_event(state, f"BUY {ticker} @ {price:.2f} | Regime: {market_regime}")
+                # Updated BUY log to show entry price
+                log_event(state, f"🚀 BUY {ticker} | Price: ${price:.2f} | Shares: {shares:.2f}")
 
         elif signal == "SELL" and pos['shares'] > 0:
-            rev = pos['shares'] * price * 0.999
-            state['cash'] += rev
+            # Calculate financials before closing
+            shares = pos['shares']
+            buy_price = pos['entry_price']
+            sell_price = price
+            
+            revenue = shares * sell_price * 0.999
+            cost_basis = shares * buy_price
+            
+            # Profit Calculations
+            dollar_profit = revenue - cost_basis
+            pct_profit = (dollar_profit / cost_basis) * 100
+            
+            state['cash'] += revenue
             state['positions'][ticker] = {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0, 'highest_price': 0}
-            log_event(state, f"CLOSED {ticker} @ {price:.2f} | {exit_reason} | Regime: {market_regime}")
-
+            
+            # Updated SELL log with detailed P&L
+            log_msg = (f"💰 CLOSED {ticker} | "
+                       f"Buy: ${buy_price:.2f} | "
+                       f"Sell: ${sell_price:.2f} | "
+                       f"Profit: ${dollar_profit:+.2f} ({pct_profit:+.2f}%) | "
+                       f"Reason: {exit_reason}")
+            log_event(state, log_msg)
+            
     save_state(state)
     return "Logic Executed"
 
 # --- 4. FLASK ROUTES ---
 
-@app.route('/')
 @app.route('/')
 def home():
     base_state = get_state()

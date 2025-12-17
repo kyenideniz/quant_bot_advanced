@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -593,18 +593,24 @@ def run_main_logic():
 @app.route('/')
 def home():
     base_state = get_state()
-    if not base_state: return jsonify({"status": "error", "msg": "DB Error"})
+    if not base_state: 
+        return jsonify({"status": "error", "msg": "DB Error"})
     
+    # 1. Get Portfolio Data (Same as before)
     perf_data = get_portfolio_data(base_state)
     
-    # 1. Prepare Base Output
+    # 2. Prepare Base Output
     output = base_state.copy()
-    output['positions'] = perf_data['PositionDetails'] # Now contains your numbered 01. Status, etc.
+    output['positions'] = perf_data['PositionDetails']
 
-    return_on_bought = perf_data['TotalGainLoss'] * 100 / (100000 - output['cash'])
+    # Handle division by zero if cash is exactly 100k
+    invested_capital = 100000 - output['cash']
+    return_on_bought = 0.0
+    if invested_capital > 0:
+        return_on_bought = perf_data['TotalGainLoss'] * 100 / invested_capital
 
-    # 2. Number the Portfolio Summary Keys
-    final_output = {
+    # 3. Create the Summary Dictionary
+    final_data = {
         "PORTFOLIO_SUMMARY": {
             "1. Overall Return (%)": perf_data['OverallReturnPct'],
             "2. Return on Bought Assets (%)" : round(return_on_bought, 2),
@@ -616,13 +622,9 @@ def home():
         **output
     }
     
-    # Clean up duplicate cash entry
-    if 'cash' in final_output: del final_output['cash']
-    
-    # Optional: Tell Flask NOT to sort keys (preserves your 1,2,3 order)
-    app.config['JSONIFY_SORT_KEYS'] = False
-
-    return jsonify(final_output)
+    # 4. Render the HTML Dashboard
+    # Instead of returning jsonify(final_data), we pass final_data to the template
+    return render_template('dashboard.html', data=final_data)
 
 @app.route('/run')
 def execute():

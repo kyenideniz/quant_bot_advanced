@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantCloud Terminal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-body: #0f172a;       /* Slate 900 */
+            --bg-card: #1e293b;       /* Slate 800 */
+            --bg-card-hover: #334155; /* Slate 700 */
+            --text-main: #ffffff;     /* Pure White */
+            --text-muted: #94a3b8;    /* Slate 400 */
+            --accent-primary: #6366f1; /* Indigo 500 */
+            --accent-success: #10b981; /* Emerald 500 */
+            --accent-danger: #ef4444;  /* Red 500 */
+            --accent-warning: #f59e0b; /* Amber 500 */
+            --border-color: #334155;
+        }
+
+        body { 
+            background-color: var(--bg-body); 
+            color: var(--text-main); 
+            font-family: 'Inter', sans-serif; 
+            padding-bottom: 50px;
+        }
+
+        /* --- CARDS --- */
+        .card { 
+            background-color: var(--bg-card); 
+            border: 1px solid var(--border-color); 
+            border-radius: 12px; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        /* --- TEXT UTILITIES --- */
+        .text-white { color: #ffffff !important; }
+        .text-pos { color: var(--accent-success) !important; font-weight: 700; }
+        .text-neg { color: var(--accent-danger) !important; font-weight: 700; }
+        
+        /* Stop Price Styling */
+        .text-stop { color: var(--accent-warning) !important; font-weight: 700; }
+        .label-stop { color: var(--accent-warning) !important; opacity: 0.8; font-size: 0.8rem; text-transform: uppercase; }
+
+        .metric-value { font-size: 1.75rem; font-weight: 700; color: white; }
+        .metric-label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+
+        /* --- BUTTONS --- */
+        .btn-more {
+            width: 100%;
+            background-color: rgba(255,255,255,0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            border-radius: 8px;
+            padding: 8px;
+            transition: all 0.2s;
+        }
+        .btn-more:hover { background-color: rgba(255,255,255,0.1); color: white; }
+
+        .btn-primary-custom {
+            background-color: var(--accent-primary);
+            border: none;
+            color: white;
+            padding: 8px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+
+        /* --- GRID --- */
+        .positions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 8px;
+        }
+        .data-row:last-child { border-bottom: none; }
+        
+        .data-label { color: rgba(255,255,255,0.6); font-size: 0.9rem; }
+        .data-value { color: var(--bg-card); font-weight: 600; font-size: 1rem; }
+        
+        /* Table Styles */
+        .table { color: var(--text-black); }
+        .table-custom th { background-color: var(--bg-card); color: var(--text-muted); border-bottom: 1px solid var(--border-color); }
+        .table-custom td { border-bottom: 1px solid var(--border-color); color: var(--bg-card); background-color: var(--bg-card);}
+        
+        /* Console */
+        .console-box { 
+            height: 350px; overflow-y: scroll; background-color: #020617; 
+            padding: 20px; font-family: 'Courier New', monospace; font-size: 0.85rem; 
+            border: 1px solid var(--border-color); border-radius: 0 0 12px 12px; color: #cbd5e1;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid px-4 py-4">
+    
+    <div class="d-flex justify-content-between align-items-end mb-5">
+        <div>
+            <h4 class="mb-1 fw-bold text-white">QUANT CLOUD</h4>
+            <div class="text-gray small ms-1">Last Rebalance: {{ data.get('last_rebalance', 'N/A') }}</div>
+        </div>
+        <div>
+            <a href="/" class="btn btn-outline-secondary btn-sm me-2">Refresh</a>
+            <button onclick="runBot()" class="btn btn-primary-custom">⚡ Run Logic</button>
+        </div>
+    </div>
+
+    {% set summary = data.get('PORTFOLIO_SUMMARY', {}) %}
+    <div class="row g-3 mb-5">
+        <div class="col-md-2 col-6">
+            <div class="card p-3 h-100 text-center">
+                <div class="metric-label">Total Equity</div>
+                <div class="metric-value">${{ "{:,.0f}".format(summary.get('3. Total Equity', 0)) }}</div>
+            </div>
+        </div>
+        <div class="col-md-2 col-6">
+            <div class="card p-3 h-100 text-center">
+                <div class="metric-label">Total P&L</div>
+                <div class="metric-value {% if summary.get('4. Total P&L', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                    ${{ "{:,.0f}".format(summary.get('4. Total P&L', 0)) }}
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 col-6">
+            <div class="card p-3 h-100 text-center">
+                <div class="metric-label">Return %</div>
+                <div class="metric-value {% if summary.get('1. Overall Return (%)', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                    {{ summary.get('1. Overall Return (%)', 0) }}%
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 col-6">
+            <div class="card p-3 h-100 text-center">
+                <div class="metric-label">Cash</div>
+                <div class="metric-value text-white">${{ "{:,.0f}".format(summary.get('6. Cash', 0)) }}</div>
+            </div>
+        </div>
+        <div class="col-md-4 col-12">
+            <div class="card p-3 h-100 text-center" style="border-color: var(--accent-primary);">
+                <div class="metric-label text-white">Bot ROI</div>
+                <div class="metric-value" style="color: var(--accent-primary);">{{ summary.get('2. Return on Bought Assets (%)', 0) }}%</div>
+            </div>
+        </div>
+    </div>
+
+    <h6 class="text-orange text-uppercase mb-3 ms-1 fw-bold">Active Positions</h6>
+    <div class="positions-grid mb-5 ">
+        {% for ticker, details in data.get('positions', {}).items() %}
+        {% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
+        
+        <div class="card">
+            <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+                    <h2 class="fw-bold m-0 {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">{{ ticker }}</h2>
+                    <span class="badge {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">LONG</span>
+                </div>
+
+                <div class="data-row">
+                    <span class="data-label">Return %</span>
+                    <span class="data-value {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                        {{ details.get('01. Return %', 0) }}%
+                    </span>
+                </div>
+
+                <div class="data-row">
+                    <span class="data-label">Gain/Loss</span>
+                    <span class="data-value {% if details.get('02. Gain/Loss', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                        ${{ details.get('02. Gain/Loss', 0) }}
+                    </span>
+                </div>
+
+                <div class="data-row">
+                    <span class="data-label">Current Price</span>
+                    <span class="data-value">${{ details.get('03. Current Price', 0) }}</span>
+                </div>
+
+                <div class="data-row">
+                    <span class="label-stop">Stop Price</span>
+                    <span class="text-stop">${{ details.get('04. Stop Price', 0) }}</span>
+                </div>
+
+                <div class="data-row mb-3">
+                    <span class="data-label">Entry Price</span>
+                    <span class="data-value">${{ details.get('05. Entry Price', 0) }}</span>
+                </div>
+
+                <div class="collapse" id="details-{{ loop.index }}">
+                    <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
+                        
+                        <div class="data-row">
+                            <span class="data-label">Risk Cushion</span>
+                            <span class="data-value">{{ details.get('06. Risk Cushion', '0%') }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Current ATR</span>
+                            <span class="data-value">{{ details.get('07. Current Atr', 0) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Shares</span>
+                            <span class="data-value">{{ details.get('08. Shares', 0)|round(2) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Highest Price</span>
+                            <span class="data-value">${{ details.get('09. Highest Price', 0) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Status</span>
+                            <span class="data-value text-info">{{ details.get('10. Status', 'N/A') }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Regime</span>
+                            <span class="data-value text-warning">{{ details.get('11. Market Regime', 'N/A') }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Cost Basis</span>
+                            <span class="data-value">${{ details.get('13. Cost Basis', 0) }}</span>
+                        </div>
+
+                    </div>
+                </div>
+
+                <button class="btn btn-more" type="button" data-bs-toggle="collapse" data-bs-target="#details-{{ loop.index }}">
+                    More Details <i class="bi bi-chevron-down ms-1"></i>
+                </button>
+
+            </div>
+        </div>
+        
+        {% endif %}
+        {% endfor %}
+    </div>
+
+    <div class="row">
+        <div class="col-lg-5 mb-4">
+            <div class="card h-100">
+                <div class="card-header text-white">Watchlist & Neutral</div>
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-custom table-hover m-0">
+                        <thead>
+                            <tr><th class="ps-4">Asset</th><th>Status</th><th>Target</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for ticker, details in data.get('positions', {}).items() %}
+                            {% if details.get('01. Status') == 'NEUTRAL' or details.get('10. Status') == 'NEUTRAL' %}
+                            <tr>
+                                <td class="ps-4 fw-bold text-white">{{ ticker }}</td>
+                                <td><span class="badge bg-secondary">WAITING</span></td>
+                                <td class="small font-monospace text-white">
+                                    {% set conf = data.get('config', {}).get(ticker, {}) %}
+                                    {{ conf.get('Target', 0)|round(3) }}
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-7 mb-4">
+            <div class="card h-100">
+                <div class="card-header text-white">System Activity</div>
+                <div class="console-box">
+                    {% for log in data.get('logs', [])|reverse %}
+                        <div class="border-bottom border-dark py-1">
+                            <span class="text-secondary me-2">{{ log.split('|')[0] }}</span>
+                            <span class="text-light">{{ log.split('|')[1] if '|' in log else log }}</span>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    function runBot() {
+        if(confirm("Execute trading logic?")) {
+            fetch('/run').then(r => r.json()).then(d => { alert(d.msg); location.reload(); });
+        }
+    }
+</script>
+</body>
+</html>

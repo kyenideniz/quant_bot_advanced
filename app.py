@@ -363,31 +363,7 @@ def run_hrp(prices):
     return get_rec_bisection(cov, sort_ix).to_dict()
 
 def optimize_params(df):
-    close_vals = df['Close'].values
-    high_vals = df['High'].values
-    low_vals = df['Low'].values
-    returns = df['Close'].pct_change().fillna(0).values
-    best_score = -np.inf
-    best_params = (55, 20)
-    for entry in range(20, 70, 5):
-        for exit in range(10, 40, 5):
-            if exit >= entry: continue
-            r_high = pd.Series(high_vals).rolling(entry).max().shift(1).fillna(0).values
-            r_low = pd.Series(low_vals).rolling(exit).min().shift(1).fillna(0).values
-            pos = np.zeros(len(close_vals))
-            in_pos = 0
-            for i in range(entry + 1, len(close_vals)):
-                if in_pos == 0:
-                    if close_vals[i] >= r_high[i]: in_pos = 1
-                elif in_pos == 1:
-                    if close_vals[i] <= r_low[i]: in_pos = 0
-                    else: in_pos = 1
-                pos[i] = in_pos
-            strat_rets = returns[1:] * pos[:-1]
-            total_ret = np.nancumprod(1 + strat_rets)[-1]
-            if total_ret > best_score:
-                best_score = total_ret
-                best_params = (entry, exit)
+    best_params = (50, 20)
     return best_params
 
 def get_fresh_universe():

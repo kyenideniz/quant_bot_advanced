@@ -499,7 +499,7 @@ def run_main_logic():
                 reason = "Breakout"
             
             # B: Dip Re-entry (Requires RSI Confirmation)
-            elif regime in ["THE EXPLOSION", "THE GRIND"]:
+            elif market_regime in ["THE EXPLOSION", "THE GRIND"]:
                 pullback_zone = (price < hist_high * 0.98) and (price > hist_high * 0.92)
                 
                 # RSI Filter: Ensure we aren't buying while momentum is still crashing

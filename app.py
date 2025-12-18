@@ -49,9 +49,12 @@ INITIAL_CAPITAL = 100000.0
 COLLECTION_NAME = "trading_bot"
 DOC_NAME = "portfolio_state_advanced"
 MACRO_ASSETS = [
-    'BTC-USD', 'ETH-USD', 'SOL-USD',  # Crypto
-    'GLD', 'SLV', 'USO', 'GDX',       # Commodities
-    'TLT', 'UUP'                      # Bonds/Dollar
+    # Major Crypto (Layer 1s & DeFi)
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 
+    'ADA-USD', 'DOGE-USD', 'AVAX-USD', 'LINK-USD', 'DOT-USD',
+    
+    # Commodities/Macro
+    'GLD', 'SLV', 'USO', 'GDX', 'TLT', 'UUP'
 ]
 
 # --- 1. CORE MATH & REGIME UTILS ---
@@ -201,6 +204,9 @@ def is_trading_hour():
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
     return market_open <= now <= market_close
+
+def is_crypto(ticker):
+    return ticker.endswith('-USD')
 
 # --- VIEW LOGIC (Restored for Dashboard) ---
 def get_portfolio_data(state):
@@ -382,98 +388,209 @@ def get_fresh_universe():
     return list(set(tickers))
 
 def run_monthly_rebalance(state):
-    log_event(state, "⏳ MONTHLY REBALANCE & REGIME TUNING STARTED...")
+    log_event(state, "⏳ REBALANCE STARTED (Dual-Speed Lookback)...")
     
     universe = get_fresh_universe()
-    data = retry_download(universe, "1y")
-    if data is None: return state
+    
+    # 1. Split Universe
+    crypto_tickers = [t for t in universe if t.endswith('-USD')]
+    macro_tickers = [t for t in universe if not t.endswith('-USD')]
+    
+    # 2. Fetch Data (Dual Lookback)
+    data_crypto = retry_download(crypto_tickers, "90d") 
+    data_macro = retry_download(macro_tickers, "1y")    
+    
+    if data_crypto is None and data_macro is None: return state
 
-    # Momentum Rank
+    # 3. Build Unified Data Dictionary
+    combined_data = {}
+    def pack_data(source_df, ticker_list):
+        if source_df is None or source_df.empty: return
+        if isinstance(source_df.columns, pd.MultiIndex):
+            for t in ticker_list:
+                try: combined_data[t] = source_df[t]
+                except KeyError: pass
+        else:
+            if len(ticker_list) == 1: combined_data[ticker_list[0]] = source_df
+
+    pack_data(data_crypto, crypto_tickers)
+    pack_data(data_macro, macro_tickers)
+
+    # 4. Momentum Scoring
     scores = {}
-    for ticker in universe:
+    for ticker, df in combined_data.items():
         try:
-            df = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
             close = df['Close'].dropna()
-            if len(close) < 100: continue
+            if len(close) < 60: continue 
             mom = (close.iloc[-1] / close.iloc[0]) - 1
             vol = close.pct_change().std() * np.sqrt(126)
             if vol > 0: scores[ticker] = mom / vol
         except: continue
 
-    candidates = sorted(scores, key=scores.get, reverse=True)[:12]
+    # 5. Select Top Candidates (Top 20)
+    candidates = sorted(scores, key=scores.get, reverse=True)[:20]
+    if not candidates: return state
+
+    # 6. Prepare HRP Matrix
+    all_closes = []
+    for t in candidates:
+        if t in combined_data:
+            series = combined_data[t]['Close']
+            series.name = t
+            all_closes.append(series)
     
-    # HRP Weights
-    price_matrix = data.xs('Close', level=1, axis=1)[candidates].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close']
+    if not all_closes: return state
+    price_matrix = pd.concat(all_closes, axis=1)
+    price_matrix = price_matrix.tail(90).dropna()
+
+    # 7. Run HRP & Allocation
     raw_weights = run_hrp(price_matrix)
-    final_portfolio = {k: v for k, v in raw_weights.items() if v >= 0.05}
+    final_portfolio = {k: v for k, v in raw_weights.items() if v >= 0.025}
+    
     total_w = sum(final_portfolio.values())
     if total_w > 0: final_portfolio = {k: v/total_w for k, v in final_portfolio.items()}
     
+    # 8. Generate New Config (The Winners)
     new_config = {}
     for ticker, weight in final_portfolio.items():
-        t_df = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
+        t_df = combined_data[ticker]
         entry, exit = optimize_params(t_df)
-        
-        # Optimize Regime Params (Middle Ground Search)
         reg_period, reg_thresh = optimize_regime_params(t_df)
+        
+        default_entry = 20 if ticker.endswith('-USD') else 55
         
         new_config[ticker] = {
             'Target': round(weight, 3),
-            'Entry': entry,
+            'Entry': default_entry,
             'Exit': exit,
             'RegimePeriod': reg_period,
             'RegimeThresh': reg_thresh
         }
     
+    # --- 9. SAFETY NET: PRESERVE HELD ASSETS ---
+    # If we own it, we MUST keep watching it, even if it's not in the top 20.
+    held_tickers = [t for t, p in state['positions'].items() if p.get('shares', 0) > 0]
+    
+    for t in held_tickers:
+        if t not in new_config:
+            # It dropped out of the top list, but we are holding it.
+            # We add it back with Target = 0.0 (Stop Buying, Just Monitor).
+            
+            # Fetch data if we don't have it already
+            if t in combined_data:
+                t_df = combined_data[t]
+            else:
+                t_df = retry_download(t, "100d")
+            
+            # Fallback if download fails: keep old config
+            if t_df is None or t_df.empty:
+                old_conf = state['config'].get(t, {})
+                new_config[t] = old_conf
+                new_config[t]['Target'] = 0.0 # Force target to 0
+                continue
+
+            # Optimize params so we have fresh Stop Loss logic
+            entry, exit = optimize_params(t_df)
+            reg_period, reg_thresh = optimize_regime_params(t_df)
+            default_entry = 20 if t.endswith('-USD') else 55
+            
+            new_config[t] = {
+                'Target': 0.0, # 0% Target means "Sell only" mode
+                'Entry': default_entry,
+                'Exit': exit,
+                'RegimePeriod': reg_period,
+                'RegimeThresh': reg_thresh
+            }
+            log_event(state, f"🛡️ RETAINING {t} (Held Position - Monitoring for Exit)")
+
     state['config'] = new_config
     state['last_rebalance'] = datetime.now().strftime("%Y-%m-%d")
-    log_event(state, f"✅ NEW PORTFOLIO: {list(new_config.keys())}")
+    log_event(state, f"✅ REBALANCE COMPLETE. Watching {len(new_config)} assets.")
     return state
 
+# --- MAIN LOGIC ---
 def run_main_logic():
-    if not is_trading_hour(): return "Market Closed"
+    # 1. SETUP TIME & SCOPE
+    nyc = pytz.timezone('America/New_York')
+    now = datetime.now(nyc)
+    
+    # We define "Market Close" as the 3 PM (15:00) hour in New York.
+    # Stocks/Gold are only processed during this hour to avoid intraday noise.
+    # Crypto is processed 24/7 (every time this function runs).
+    is_market_close_window = (now.hour == 15)
+    
     state = get_state()
     if not state: return "DB Error"
 
+    # 2. WEEKLY REBALANCE TRIGGER
+    # Checks if 7 days have passed since the last rebalance
+    last_reb_str = state.get('last_rebalance', '2020-01-01')
+    try:
+        last_reb = datetime.strptime(last_reb_str, "%Y-%m-%d")
+    except ValueError:
+        # Handle cases where timestamp might be included
+        last_reb = datetime.strptime(last_reb_str.split(" ")[0], "%Y-%m-%d")
+
+    days_since_rebalance = (datetime.now() - last_reb).days
+    
+    if days_since_rebalance >= 7:
+        log_event(state, f"🔄 TRIGGERING WEEKLY REBALANCE (Last: {days_since_rebalance} days ago)")
+        # This calls your new 'Dual-Speed' rebalance function
+        state = run_monthly_rebalance(state) 
+    
+    # 3. DEFINE ACTION LIST (The "Hourly" Filter)
     active_tickers = list(state.get('config', {}).keys())
     held_tickers = list(state.get('positions', {}).keys())
     all_monitored_tickers = list(set(active_tickers + held_tickers))
+    
+    tickers_to_process = []
+    
+    for t in all_monitored_tickers:
+        if is_crypto(t):
+            # Always process Crypto (24/7)
+            tickers_to_process.append(t)
+        elif is_market_close_window:
+            # Only process Stocks/Gold/Bond at 3 PM ET
+            tickers_to_process.append(t)
+            
+    if not tickers_to_process:
+        # If it's 10 AM and we only hold Gold, we do nothing.
+        return "Skipping Macro Assets (Not Market Close)"
 
-    # --- Monthly Rebalance Trigger ---
-    last_reb = datetime.strptime(state.get('last_rebalance', '2020-01-01'), "%Y-%m-%d")
-    if datetime.now().month != last_reb.month:
-        state = run_monthly_rebalance(state)
-        active_tickers = list(state.get('config', {}).keys())
-        all_monitored_tickers = list(set(active_tickers + held_tickers))
-
-    # Calculate Total Equity for Sizing
+    # 4. CALCULATE EQUITY FOR SIZING
     total_equity = state['cash']
     for ticker in held_tickers:
         pos = state['positions'][ticker]
         if pos.get('shares', 0) > 0:
-            # Note: Using entry_price for a rough equity estimate; 
-            # Production could fetch live price here for better precision.
             total_equity += (pos['shares'] * pos['entry_price'])
 
-    for ticker in all_monitored_tickers:
+    # 5. MAIN TRADING LOOP
+    for ticker in tickers_to_process:
+        # Download data (Crypto gets 100d, Macro gets 100d for indicators)
         df = retry_download(ticker, "100d")
         if df is None or len(df) < 60: continue
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(1)
         
         price = df['Close'].iloc[-1]
         current_atr = get_atr(df, window=14)
-        pos = state['positions'].get(ticker, {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0, 'highest_price': 0})
+        current_rsi = get_rsi(df)
         
+        pos = state['positions'].get(ticker, {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0, 'highest_price': 0})
         existing_conf = state['config'].get(ticker, {})
+
+        # --- DYNAMIC PARAMETERS ---
+        # Crypto uses fast (20d) entry by default. Macro uses slow (55d).
+        default_entry = 20 if is_crypto(ticker) else 55
+        
         params = {
-            'Entry': existing_conf.get('Entry', 55),
+            'Entry': existing_conf.get('Entry', default_entry),
             'Exit': existing_conf.get('Exit', 20),
             'Target': existing_conf.get('Target', 0.0),
             'RegimePeriod': existing_conf.get('RegimePeriod', 16),
             'RegimeThresh': existing_conf.get('RegimeThresh', 0.25)
         }
 
-        # Update Highest Price for Trailing Stops
+        # Update Highest Price (for Trailing Stops)
         if pos['status'] == 'LONG':
             if 'highest_price' not in pos or pos['highest_price'] == 0: 
                 pos['highest_price'] = pos['entry_price']
@@ -481,61 +598,81 @@ def run_main_logic():
                 pos['highest_price'] = price
                 state['positions'][ticker] = pos
 
+        # Market Regime & Breakout Levels
         market_regime = get_regime(df, period=params['RegimePeriod'], threshold=params['RegimeThresh'])
-        hist_high = df['High'].iloc[:-1].rolling(params['Entry']).max().iloc[-1]
+        
+        # Calculate TWO breakout levels
+        hist_high_slow = df['High'].iloc[:-1].rolling(55).max().iloc[-1] # Safe (Turtle 2)
+        hist_high_fast = df['High'].iloc[:-1].rolling(20).max().iloc[-1] # Aggressive (Turtle 1)
         
         signal = "HOLD"
         exit_reason = ""
 
-        # === 1. BUY / RE-ENTRY SIGNALS ===
-        # Fetch RSI for confirmation
-        current_rsi = get_rsi(df)
-
-        # BUY SIGNALS (Updated with RSI Filter)
+        # === BUY / RE-ENTRY SIGNALS ===
         if pos['status'] == "NEUTRAL" and ticker in active_tickers:
-            # A: Standard Breakout (No RSI needed, price is at a new 55-day high)
-            if price > hist_high: 
-                signal = "BUY"
-                reason = "Breakout"
             
-            # B: Dip Re-entry (Requires RSI Confirmation)
+            # A. BREAKOUT LOGIC
+            # If Crypto, we ALWAYS take the 20-day breakout.
+            if is_crypto(ticker) and price > hist_high_fast:
+                signal = "BUY"
+                reason = "Crypto Fast Breakout (20d)"
+            
+            # If Macro, we take 20-day ONLY if regime is EXPLOSION.
+            elif not is_crypto(ticker) and market_regime == "THE EXPLOSION" and price > hist_high_fast:
+                 signal = "BUY"
+                 reason = "Explosive Macro Breakout (20d)"
+            
+            # Fallback: Standard 55-day Breakout for Macro
+            elif price > hist_high_slow:
+                signal = "BUY"
+                reason = "Standard Breakout (55d)"
+            
+            # B. DIP RE-ENTRY LOGIC
+            # Fixed variable name bug here (market_regime)
             elif market_regime in ["THE EXPLOSION", "THE GRIND"]:
-                pullback_zone = (price < hist_high * 0.98) and (price > hist_high * 0.92)
+                # Wider dip tolerance for crypto (up to 15% drop from high)
+                lower_limit = 0.85 if is_crypto(ticker) else 0.92
+                pullback_zone = (price < hist_high_fast * 0.98) and (price > hist_high_fast * lower_limit)
                 
-                # RSI Filter: Ensure we aren't buying while momentum is still crashing
-                # We want the 'Dip' but we want to see RSI showing signs of stabilization (e.g., > 30)
-                if pullback_zone and current_rsi > 35:
+                # RSI Filter: >30 ensures we don't catch a falling knife
+                if pullback_zone and current_rsi > 30:
                     signal = "BUY"
                     reason = f"Confirmed Dip (RSI: {current_rsi:.1f})"
-                    
-        # === 2. SELL / PROFIT-TAKING SIGNALS ===
+
+        # === SELL / PROFIT-TAKING SIGNALS ===
         elif pos['status'] == "LONG":
             highest = pos.get('highest_price', price)
             entry = pos.get('entry_price', price)
             current_return = (price - entry) / entry
             
-            # --- DYNAMIC MULTIPLIER (Lock in Silver Profit) ---
+            stop_price = 0.0
+
+            # 1. THE EXPLOSION (Tight Trail to lock huge gains)
             if market_regime == "THE EXPLOSION":
-                if current_return > 0.15:   m = 1.5 # Secure 15%+ gains
-                elif current_return > 0.10: m = 2.5 # Secure 10% gains
-                else:                       m = 5.0 # Default loose
+                if current_return > 0.15:   m = 1.5
+                elif current_return > 0.10: m = 2.5
+                else:                       m = 5.0
                 stop_price = highest - (m * current_atr)
                 exit_reason = f"Explosion Trail ({m}x ATR)"
 
+            # 2. THE GRIND (Looser Trail)
             elif market_regime == "THE GRIND":
                 m = 1.5 if current_return > 0.10 else 3.5
                 stop_price = highest - (m * current_atr)
                 exit_reason = f"Grind Trail ({m}x ATR)"
 
+            # 3. THE CHANNEL (Stop at Breakeven or Loss)
             elif market_regime == "THE CHANNEL":
                 stop_price = entry - (1.5 * current_atr)
                 exit_reason = "Channel Stop"
 
-            else: # DANGER ZONE / FALLBACK
+            # 4. DANGER ZONE (Emergency Exit)
+            else: 
                 stop_price = highest - (2.0 * current_atr)
                 exit_reason = "Danger Zone Tight Stop"
 
-            # Breakeven Ratchet (>7% Profit Rule)
+            # 5. BREAKEVEN GUARD (>7% Profit)
+            # If we are up 7%, never let it turn into a loss.
             if stop_price < entry and current_return > 0.07:
                 stop_price = entry + (0.1 * current_atr)
                 exit_reason = "Breakeven Guard (>7%)"
@@ -543,50 +680,44 @@ def run_main_logic():
             if price < stop_price:
                 signal = "SELL"
 
-        # === 3. EXECUTION ===
+        # === EXECUTION ===
         if signal == "BUY" and state['cash'] > 0:
             target_val = total_equity * params.get('Target', 0.0)
-            shares = target_val / price
-            cost = shares * price * 1.001
             
-            if cost < state['cash'] and shares > 0:
-                state['cash'] -= cost
-                state['positions'][ticker] = {
-                    'status': 'LONG', 
-                    'shares': shares, 
-                    'entry_price': price,
-                    'highest_price': price, 
-                    'atr_at_entry': current_atr
-                }
-                # Updated BUY log to show entry price
-                log_event(state, f"🚀 BUY {ticker} | Price: ${price:.2f} | Shares: {shares:.2f}")
+            # Minimum trade size check ($500) to avoid dust
+            if target_val > 500:
+                shares = target_val / price
+                cost = shares * price * 1.001 # 0.1% slippage/fee buffer
+                
+                if cost < state['cash']:
+                    state['cash'] -= cost
+                    state['positions'][ticker] = {
+                        'status': 'LONG', 
+                        'shares': shares, 
+                        'entry_price': price,
+                        'highest_price': price, 
+                        'atr_at_entry': current_atr
+                    }
+                    log_event(state, f"🚀 BUY {ticker} | Price: ${price:.2f} | Reason: {reason}")
 
         elif signal == "SELL" and pos['shares'] > 0:
-            # Calculate financials before closing
             shares = pos['shares']
             buy_price = pos['entry_price']
-            sell_price = price
+            revenue = shares * price * 0.999
             
-            revenue = shares * sell_price * 0.999
-            cost_basis = shares * buy_price
-            
-            # Profit Calculations
-            dollar_profit = revenue - cost_basis
-            pct_profit = (dollar_profit / cost_basis) * 100
+            dollar_profit = revenue - (shares * buy_price)
+            pct_profit = (dollar_profit / (shares * buy_price)) * 100
             
             state['cash'] += revenue
             state['positions'][ticker] = {'status': 'NEUTRAL', 'shares': 0, 'entry_price': 0, 'highest_price': 0}
             
-            # Updated SELL log with detailed P&L
             log_msg = (f"💰 CLOSED {ticker} | "
-                       f"Buy: ${buy_price:.2f} | "
-                       f"Sell: ${sell_price:.2f} | "
                        f"Profit: ${dollar_profit:+.2f} ({pct_profit:+.2f}%) | "
                        f"Reason: {exit_reason}")
             log_event(state, log_msg)
             
     save_state(state)
-    return "Logic Executed"
+    return f"Logic Executed. Processed: {tickers_to_process}"
 
 # --- 4. FLASK ROUTES ---
 
@@ -631,5 +762,24 @@ def execute():
     try: return jsonify({"status": "success", "msg": run_main_logic()})
     except Exception as e: return jsonify({"status": "error", "msg": str(e)})
 
+@app.route('/force_rebalance')
+def force_rebalance():
+    try:
+        state = get_state()
+        if not state: return jsonify({"status": "error", "msg": "DB Load Failed"})
+        
+        # Manually run the rebalance logic
+        state = run_monthly_rebalance(state)
+        
+        # Save immediately
+        save_state(state)
+        
+        return jsonify({
+            "status": "success", 
+            "msg": f"Forced Rebalance Complete. Portfolio now watching {len(state['config'])} assets."
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+        
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

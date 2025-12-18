@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template,  request
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -210,26 +210,42 @@ def is_crypto(ticker):
 
 # --- VIEW LOGIC (Restored for Dashboard) ---
 def get_portfolio_data(state):
-    # 1. Setup Data Fetching
+    # 1. SETUP DATA FETCHING
+    # Get everything we currently own
     held_tickers = [t for t, p in state['positions'].items() if p.get('shares', 0) > 0]
-    tickers_to_fetch = list(set(held_tickers + MACRO_ASSETS))
+    # Get everything the bot WANTS to trade (The Watchlist)
+    watched_tickers = list(state.get('config', {}).keys())
     
-    if not tickers_to_fetch:
+    # Combine them (removing duplicates)
+    # We also add MACRO_ASSETS just in case, though usually they are in the watchlist/held list
+    all_tickers = list(set(held_tickers + watched_tickers + MACRO_ASSETS))
+    
+    if not all_tickers:
         return {
             "TotalEquity": state['cash'], "MarketValue": 0.0,
             "TotalGainLoss": 0.0, "OverallReturnPct": 0.0,
             "PositionDetails": state['positions']
         }
 
-    # 2. Fetch Live Prices & History
-    data = retry_download(tickers_to_fetch, "100d")
+    # 2. FETCH LIVE PRICES
+    # We fetch data for EVERYTHING in our universe
+    data = retry_download(all_tickers, "100d")
     
-    # 3. Calculate Metrics & Format Positions
+    # 3. CALCULATE METRICS
     total_market_value = 0.0
     total_cost_basis = 0.0
     enhanced_positions = {}
 
-    for ticker, pos in state['positions'].items():
+    # We iterate over 'all_tickers' now, not just 'state['positions']'
+    for ticker in all_tickers:
+        # Get existing position data OR create a default 'Neutral' blob
+        pos = state['positions'].get(ticker, {
+            'status': 'NEUTRAL', 
+            'shares': 0, 
+            'entry_price': 0, 
+            'highest_price': 0
+        })
+
         # -- Get Price Data --
         try:
             df = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
@@ -246,11 +262,11 @@ def get_portfolio_data(state):
         details = {} 
 
         if shares > 0 and not df.empty:
+            # --- ACTIVE POSITION LOGIC (Same as before) ---
             current_value = shares * current_price
             total_market_value += current_value
             total_cost_basis += cost_basis
             
-            # --- CALCULATE METRICS ---
             conf = state['config'].get(ticker, {})
             r_period = conf.get('RegimePeriod', 20)
             r_thresh = conf.get('RegimeThresh', 0.25)
@@ -259,17 +275,7 @@ def get_portfolio_data(state):
             regime = get_regime(df, period=r_period, threshold=r_thresh)
             highest = pos.get('highest_price', current_price)
             
-            # Calculate Stop Level
-            stop_price = 0.0
-            if regime == "THE GRIND":      stop_price = highest - (3.5 * atr)
-            elif regime == "THE EXPLOSION": stop_price = highest - (5.0 * atr)
-            elif regime == "THE CHANNEL":   stop_price = entry_price - (1.5 * atr)
-            elif regime == "DANGER ZONE":   stop_price = highest - (2.0 * atr)
-            
-            # Breakeven Visualization (Optional: Does not affect logic, just view)
-            # Inside get_portfolio_data(), replace the stop_price calculation:
-
-            # Calculate Stop Level for Dashboard Display
+            # Stop Loss Calc
             current_return = (current_price - entry_price) / entry_price
             stop_price = 0.0
             
@@ -288,32 +294,36 @@ def get_portfolio_data(state):
 
             if stop_price < entry_price and current_return > 0.07:
                 stop_price = entry_price + (0.1 * atr)
+            
+            # Dropped Asset Logic for View
+            tgt = conf.get('Target', 0.0)
+            if tgt == 0.0 and current_return > 0.015:
+                 floor = entry_price * 1.002
+                 if stop_price < floor: stop_price = floor
 
             dist_pct = ((current_price - stop_price) / current_price) * 100
             
-            # --- POPULATE DASHBOARD KEYS ---
             details['01. Return %'] = round(((current_value - cost_basis) / cost_basis) * 100, 2)
             details['02. Gain/Loss'] = round(current_value - cost_basis, 2)
             details['03. Current Price'] = round(current_price, 2)
-            
             details['04. Stop Price'] = round(stop_price, 2)
             details['05. Entry Price'] = round(entry_price, 2)
             details['06. Risk Cushion'] = f"{round(dist_pct, 1)}%"
             details['07. Current Atr'] = round(atr, 2)
-            
             details['08. Shares'] = round(shares, 4)
             details['09. Highest Price'] = round(highest, 2)
             details['10. Status'] = 'LONG'
             details['11. Market Regime'] = regime
-            
-            # --- NEW: ENTRY PRICE ---
             details['13. Cost Basis'] = round(cost_basis, 2)
 
         else:
+            # --- WATCHLIST LOGIC (For new assets) ---
             details['01. Status'] = 'NEUTRAL'
             details['02. Shares'] = 0
-            
+
         enhanced_positions[ticker] = details
+        
+    enhanced_positions = dict(sorted(enhanced_positions.items(), key=lambda item: item[1].get('01. Return %', -1000), reverse=True))
 
     total_equity = state['cash'] + total_market_value
     total_pl = total_market_value - total_cost_basis
@@ -416,20 +426,60 @@ def run_monthly_rebalance(state):
     pack_data(data_crypto, crypto_tickers)
     pack_data(data_macro, macro_tickers)
 
-    # 4. Momentum Scoring
+    # 4. ADVANCED SCORING (Sortino for Crypto, Adjusted Sharpe for Macro)
     scores = {}
+    
     for ticker, df in combined_data.items():
         try:
             close = df['Close'].dropna()
             if len(close) < 60: continue 
-            mom = (close.iloc[-1] / close.iloc[0]) - 1
-            vol = close.pct_change().std() * np.sqrt(126)
-            if vol > 0: scores[ticker] = mom / vol
-        except: continue
 
-    # 5. Select Top Candidates (Top 20)
+            # A. Calculate Raw Momentum (Return)
+            # Crypto: 90 days (from your dual-speed logic)
+            # Macro: 1 year (from your dual-speed logic)
+            total_return = (close.iloc[-1] / close.iloc[0]) - 1
+            
+            # B. Get Daily Returns
+            daily_rets = close.pct_change().dropna()
+
+            # C. Define "Risk" differently for Crypto vs Macro
+            if ticker.endswith('-USD'):
+                # === CRYPTO SCORING: SORTINO RATIO ===
+                # We only look at NEGATIVE volatility (Downside Deviation).
+                # Upside volatility (pumps) is NOT penalized.
+                negative_rets = daily_rets[daily_rets < 0]
+                
+                # Safety: If no negative days, use a tiny number to avoid div/0
+                downside_std = negative_rets.std() * np.sqrt(365) if not negative_rets.empty else 0.01
+                if downside_std == 0: downside_std = 0.01
+                
+                # Bonus: We boost the score slightly (1.2x) to account for the
+                # higher risk premium required to hold crypto.
+                score = (total_return / downside_std) * 1.2
+                
+            else:
+                # === MACRO SCORING: SHARPE RATIO ===
+                # For Gold/Stocks, we penalize ALL volatility because
+                # stability is the main goal here.
+                total_std = daily_rets.std() * np.sqrt(252)
+                if total_std == 0: total_std = 0.01
+                
+                score = (total_return / total_std)
+
+            # Sanity check: If score is valid, save it
+            if not np.isnan(score) and not np.isinf(score):
+                scores[ticker] = score
+
+        except Exception as e:
+            print(f"Skipping {ticker}: {e}")
+            continue
+
+    # 5. NATURAL SELECTION (No Quotas)
     candidates = sorted(scores, key=scores.get, reverse=True)[:20]
-    if not candidates: return state
+    
+    if not candidates: return state 
+    log_event(state, f"🏆 TOP 20 WINNERS: {candidates}")
+    
 
     # 6. Prepare HRP Matrix
     all_closes = []
@@ -509,7 +559,7 @@ def run_monthly_rebalance(state):
     return state
 
 # --- MAIN LOGIC ---
-def run_main_logic():
+def run_main_logic(force_run=False):
     # 1. SETUP TIME & SCOPE
     nyc = pytz.timezone('America/New_York')
     now = datetime.now(nyc)
@@ -517,7 +567,7 @@ def run_main_logic():
     # We define "Market Close" as the 3 PM (15:00) hour in New York.
     # Stocks/Gold are only processed during this hour to avoid intraday noise.
     # Crypto is processed 24/7 (every time this function runs).
-    is_market_close_window = (now.hour == 15)
+    is_market_close_window = (now.hour == 15) or force_run
     
     state = get_state()
     if not state: return "DB Error"
@@ -647,7 +697,7 @@ def run_main_logic():
             
             stop_price = 0.0
 
-            # 1. THE EXPLOSION (Tight Trail to lock huge gains)
+            # 1. THE EXPLOSION
             if market_regime == "THE EXPLOSION":
                 if current_return > 0.15:   m = 1.5
                 elif current_return > 0.10: m = 2.5
@@ -655,27 +705,37 @@ def run_main_logic():
                 stop_price = highest - (m * current_atr)
                 exit_reason = f"Explosion Trail ({m}x ATR)"
 
-            # 2. THE GRIND (Looser Trail)
+            # 2. THE GRIND
             elif market_regime == "THE GRIND":
                 m = 1.5 if current_return > 0.10 else 3.5
                 stop_price = highest - (m * current_atr)
                 exit_reason = f"Grind Trail ({m}x ATR)"
 
-            # 3. THE CHANNEL (Stop at Breakeven or Loss)
+            # 3. THE CHANNEL
             elif market_regime == "THE CHANNEL":
                 stop_price = entry - (1.5 * current_atr)
                 exit_reason = "Channel Stop"
 
-            # 4. DANGER ZONE (Emergency Exit)
+            # 4. DANGER ZONE
             else: 
                 stop_price = highest - (2.0 * current_atr)
                 exit_reason = "Danger Zone Tight Stop"
 
-            # 5. BREAKEVEN GUARD (>7% Profit)
-            # If we are up 7%, never let it turn into a loss.
+            # 5. BREAKEVEN GUARD (>7% Profit) - Standard for Active Assets
             if stop_price < entry and current_return > 0.07:
                 stop_price = entry + (0.1 * current_atr)
                 exit_reason = "Breakeven Guard (>7%)"
+
+            # --- 6. DROPPED ASSET PROTOCOL (SMART GUARD) ---
+            # Only applies if Target is 0 (Asset was rejected by rebalance)
+            if params.get('Target', 0.0) == 0.0:
+                # Only enforce floor if we have > 3% profit cushion
+                if current_return > 0.03: 
+                    breakeven_floor = entry * 1.002
+                    # Ensure stop never drops below breakeven
+                    if stop_price < breakeven_floor:
+                        stop_price = breakeven_floor
+                        exit_reason = "Dropped Asset Guard (Floor)"
 
             if price < stop_price:
                 signal = "SELL"
@@ -759,9 +819,14 @@ def home():
 
 @app.route('/run')
 def execute():
-    try: return jsonify({"status": "success", "msg": run_main_logic()})
-    except Exception as e: return jsonify({"status": "error", "msg": str(e)})
-
+    # Check if the URL has ?force=true
+    force = request.args.get('force') == 'true'
+    try: 
+        # Pass the force flag to your logic
+        return jsonify({"status": "success", "msg": run_main_logic(force_run=force)})
+    except Exception as e: 
+        return jsonify({"status": "error", "msg": str(e)})
+    
 @app.route('/force_rebalance')
 def force_rebalance():
     try:

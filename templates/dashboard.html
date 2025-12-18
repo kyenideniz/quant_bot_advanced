@@ -71,6 +71,20 @@
             font-weight: 600;
         }
 
+        /* New Warning Button for Rebalance */
+        .btn-warning-custom {
+            background-color: var(--accent-warning);
+            border: none;
+            color: white;
+            padding: 8px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        .btn-warning-custom:hover {
+            background-color: #d97706; /* Darker amber */
+            color: white;
+        }
+
         /* --- GRID --- */
         .positions-grid {
             display: grid;
@@ -114,6 +128,9 @@
         </div>
         <div>
             <a href="/" class="btn btn-outline-secondary btn-sm me-2">Refresh</a>
+            
+            <button onclick="triggerRebalance()" class="btn btn-warning-custom me-2">⚠️ Force Rebalance</button>
+            
             <button onclick="runBot()" class="btn btn-primary-custom">⚡ Run Logic</button>
         </div>
     </div>
@@ -157,90 +174,95 @@
     </div>
 
     <h6 class="text-orange text-uppercase mb-3 ms-1 fw-bold">Active Positions</h6>
-    <div class="positions-grid mb-5 ">
+    
+    <div class="positions-grid mb-5">
         {% for ticker, details in data.get('positions', {}).items() %}
-        {% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
+{% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
+
+<div class="card">
+    <div class="card-body p-4">
         
-        <div class="card">
-            <div class="card-body p-4">
-                <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
-                    <h2 class="fw-bold m-0 {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">{{ ticker }}</h2>
-                    <span class="badge {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">LONG</span>
-                </div>
+        <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+            <h2 class="fw-bold m-0 {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">{{ ticker }}</h2>
+            <span class="badge {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">LONG</span>
+        </div>
 
+        <div class="data-row">
+            <span class="data-label">Return %</span>
+            <span class="data-value {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                {{ details.get('01. Return %', 0) }}%
+            </span>
+        </div>
+        <div class="data-row">
+            <span class="data-label">Gain/Loss</span>
+            <span class="data-value {% if details.get('02. Gain/Loss', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                ${{ details.get('02. Gain/Loss', 0) }}
+            </span>
+        </div>
+        <div class="data-row">
+            <span class="data-label">Current Price</span>
+            <span class="data-value text-white">${{ details.get('03. Current Price', 0) }}</span>
+        </div>
+        <div class="data-row">
+            <span class="label-stop">Stop Price</span>
+            <span class="text-stop">${{ details.get('04. Stop Price', 0) }}</span>
+        </div>
+        <div class="data-row mb-3">
+            <span class="data-label">Entry Price</span>
+            <span class="data-value text-white">${{ details.get('05. Entry Price', 0) }}</span>
+        </div>
+
+        <div id="details-{{ ticker }}" class="d-none"> 
+            <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
+                
                 <div class="data-row">
-                    <span class="data-label">Return %</span>
-                    <span class="data-value {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
-                        {{ details.get('01. Return %', 0) }}%
+                    <span class="data-label">Risk Cushion</span>
+                    <span class="data-value">{{ details.get('06. Risk Cushion', '0%') }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Current ATR</span>
+                    <span class="data-value">{{ details.get('07. Current Atr', 0) }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Shares</span>
+                    <span class="data-value">{{ details.get('08. Shares', 0)|round(2) }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Highest Price</span>
+                    <span class="data-value">${{ details.get('09. Highest Price', 0) }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Status</span>
+                    <span class="data-value text-info">{{ details.get('10. Status', 'N/A') }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Regime</span>
+                    <span class="data-value text-warning">{{ details.get('11. Market Regime', 'N/A') }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Cost Basis</span>
+                    <span class="data-value">${{ details.get('13. Cost Basis', 0) }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Target Alloc</span>
+                    <span class="data-value text-warning">
+                        {% set tgt = data.get('config', {}).get(ticker, {}).get('Target', 0) %}
+                        {{ (tgt * 100)|round(1) }}%
                     </span>
                 </div>
-
-                <div class="data-row">
-                    <span class="data-label">Gain/Loss</span>
-                    <span class="data-value {% if details.get('02. Gain/Loss', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
-                        ${{ details.get('02. Gain/Loss', 0) }}
-                    </span>
-                </div>
-
-                <div class="data-row">
-                    <span class="data-label">Current Price</span>
-                    <span class="data-value text-white">${{ details.get('03. Current Price', 0) }}</span>
-                </div>
-
-                <div class="data-row">
-                    <span class="label-stop">Stop Price</span>
-                    <span class="text-stop">${{ details.get('04. Stop Price', 0) }}</span>
-                </div>
-
-                <div class="data-row mb-3">
-                    <span class="data-label">Entry Price</span>
-                    <span class="data-value text-white">${{ details.get('05. Entry Price', 0) }}</span>
-                </div>
-
-                <div class="collapse" id="details-{{ loop.index }}">
-                    <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
-                        
-                        <div class="data-row">
-                            <span class="data-label">Risk Cushion</span>
-                            <span class="data-value">{{ details.get('06. Risk Cushion', '0%') }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Current ATR</span>
-                            <span class="data-value">{{ details.get('07. Current Atr', 0) }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Shares</span>
-                            <span class="data-value">{{ details.get('08. Shares', 0)|round(2) }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Highest Price</span>
-                            <span class="data-value">${{ details.get('09. Highest Price', 0) }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Status</span>
-                            <span class="data-value text-info">{{ details.get('10. Status', 'N/A') }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Regime</span>
-                            <span class="data-value text-warning">{{ details.get('11. Market Regime', 'N/A') }}</span>
-                        </div>
-                        <div class="data-row">
-                            <span class="data-label">Cost Basis</span>
-                            <span class="data-value">${{ details.get('13. Cost Basis', 0) }}</span>
-                        </div>
-
-                    </div>
-                </div>
-
-                <button class="btn btn-more" type="button" data-bs-toggle="collapse" data-bs-target="#details-{{ loop.index }}">
-                    More Details <i class="bi bi-chevron-down ms-1"></i>
-                </button>
 
             </div>
-        </div>
-        
-        {% endif %}
-        {% endfor %}
+        </div> 
+
+        <button class="btn btn-more" type="button" onclick="safeToggle('details-{{ ticker }}')">
+            More Details <i class="bi bi-chevron-down ms-1"></i>
+        </button>
+
+    </div> 
+</div> 
+
+{% endif %}
+{% endfor %}
     </div>
 
     <div class="row">
@@ -254,13 +276,18 @@
                         </thead>
                         <tbody>
                             {% for ticker, details in data.get('positions', {}).items() %}
-                            {% if details.get('01. Status') == 'NEUTRAL' or details.get('10. Status') == 'NEUTRAL' %}
+                            
+                            {# Get the Target for this asset #}
+                            {% set conf = data.get('config', {}).get(ticker, {}) %}
+                            {% set target = conf.get('Target', 0) %}
+
+                            {# LOGIC: Only show if NOT held (Neutral) AND Target > 0 #}
+                            {% if (details.get('01. Status') == 'NEUTRAL' or details.get('10. Status') == 'NEUTRAL') and target > 0.001 %}
                             <tr>
                                 <td class="ps-4 fw-bold text-white">{{ ticker }}</td>
                                 <td><span class="badge bg-secondary">WAITING</span></td>
                                 <td class="small font-monospace text-white">
-                                    {% set conf = data.get('config', {}).get(ticker, {}) %}
-                                    {{ conf.get('Target', 0)|round(3) }}
+                                    {{ target|round(3) }}
                                 </td>
                             </tr>
                             {% endif %}
@@ -291,10 +318,45 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     function runBot() {
-        if(confirm("Execute trading logic?")) {
-            fetch('/run').then(r => r.json()).then(d => { alert(d.msg); location.reload(); });
+        if(confirm("⚡ FORCE RUN: This will check ALL assets (Stocks + Crypto) immediately, ignoring time rules.\n\nProceed?")) {
+            // We add ?force=true to the URL
+            fetch('/run?force=true')
+                .then(r => r.json()) 
+                .then(d => { 
+                    alert(d.msg); 
+                    location.reload(); 
+                });
         }
     }
+
+    function triggerRebalance() {
+        if(!confirm("⚠️ Are you sure? This will rescrape the market, update your watchlist, and change targets immediately.")) return;
+        
+        // Visual feedback (optional)
+        alert("Rebalancing initiated... please wait for success message.");
+        
+        fetch('/force_rebalance')
+            .then(response => response.json())
+            .then(data => {
+                alert(data.msg);
+                location.reload(); 
+            })
+            .catch(err => alert("Error: " + err));
+    }
+
+function safeToggle(elementId) {
+        // 1. Get the element by its unique ID
+        var element = document.getElementById(elementId);
+        
+        // 2. Simply toggle the Bootstrap 'd-none' class
+        // d-none means "display: none". Removing it makes it visible.
+        if (element.classList.contains('d-none')) {
+            element.classList.remove('d-none');
+        } else {
+            element.classList.add('d-none');
+        }
+    }
+
 </script>
 </body>
 </html>

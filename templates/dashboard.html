@@ -84,21 +84,7 @@
             color: white;
         }
 
-        /* --- LAYOUT FIX: FLEXBOX INSTEAD OF GRID --- */
-        /* This replaces .positions-grid to prevent the crash */
-        .positions-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            justify-content: center; /* Center cards */
-        }
-
-        .position-card-wrapper {
-            flex: 1 1 350px; /* Grow, Shrink, Basis */
-            max-width: 600px; 
-            min-width: 300px;
-        }
-
+        /* --- UTILS --- */
         .data-row {
             display: flex;
             justify-content: space-between;
@@ -135,9 +121,7 @@
         </div>
         <div>
             <a href="/" class="btn btn-outline-secondary btn-sm me-2">Refresh</a>
-            
             <button onclick="triggerRebalance()" class="btn btn-warning-custom me-2">⚠️ Force Rebalance</button>
-            
             <button onclick="runBot()" class="btn btn-primary-custom">⚡ Run Logic</button>
         </div>
     </div>
@@ -182,11 +166,11 @@
 
     <h6 class="text-orange text-uppercase mb-3 ms-1 fw-bold">Active Positions</h6>
     
-    <div class="positions-container mb-5">
+    <div class="row g-4 mb-5">
         {% for ticker, details in data.get('positions', {}).items() %}
         {% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
         
-        <div class="position-card-wrapper">
+        <div class="col-12 col-md-6 col-xl-4">
             <div class="card h-100">
                 <div class="card-body p-4">
                     
@@ -286,11 +270,9 @@
                         <tbody>
                             {% for ticker, details in data.get('positions', {}).items() %}
                             
-                            {# Get the Target for this asset #}
                             {% set conf = data.get('config', {}).get(ticker, {}) %}
                             {% set target = conf.get('Target', 0) %}
 
-                            {# LOGIC: Only show if NOT held (Neutral) AND Target > 0 #}
                             {% if (details.get('01. Status') == 'NEUTRAL' or details.get('10. Status') == 'NEUTRAL') and target > 0.001 %}
                             <tr>
                                 <td class="ps-4 fw-bold text-white">{{ ticker }}</td>

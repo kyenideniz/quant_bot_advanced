@@ -780,43 +780,70 @@ def run_main_logic(force_run=False):
     return f"Logic Executed. Processed: {tickers_to_process}"
 
 # --- 4. FLASK ROUTES ---
+# --- GLOBAL CACHE STORAGE ---
+# This lives in the server's RAM. It resets if the server restarts.
+PORTFOLIO_CACHE = {
+    "data": None,
+    "timestamp": None
+}
 
 @app.route('/')
 def home():
-    base_state = get_state()
-    if not base_state: 
-        return jsonify({"status": "error", "msg": "DB Error"})
+    global PORTFOLIO_CACHE
     
-    # 1. Get Portfolio Data (Same as before)
-    perf_data = get_portfolio_data(base_state)
+    # 1. Check if we have valid cached data (less than 5 minutes old)
+    now = datetime.now()
+    is_cache_valid = False
     
-    # 2. Prepare Base Output
-    output = base_state.copy()
-    output['positions'] = perf_data['PositionDetails']
+    if PORTFOLIO_CACHE["data"] and PORTFOLIO_CACHE["timestamp"]:
+        age = (now - PORTFOLIO_CACHE["timestamp"]).total_seconds()
+        if age < 300:  # 300 seconds = 5 minutes
+            is_cache_valid = True
+            print(f"⚡ USING CACHE (Age: {age:.0f}s)")
 
-    # Handle division by zero if cash is exactly 100k
-    invested_capital = 100000 - output['cash']
-    return_on_bought = 0.0
-    if invested_capital > 0:
-        return_on_bought = perf_data['TotalGainLoss'] * 100 / invested_capital
+    # 2. If Cache is VALID, use it.
+    if is_cache_valid:
+        final_data = PORTFOLIO_CACHE["data"]
+        
+    # 3. If Cache is EXPIRED, fetch fresh data (The "Slow" Part)
+    else:
+        print("⏳ CACHE EXPIRED. Fetching fresh data...")
+        base_state = get_state()
+        if not base_state: 
+            return jsonify({"status": "error", "msg": "DB Error"})
+        
+        # Get live market data
+        perf_data = get_portfolio_data(base_state)
+        
+        # Prepare the output dictionary
+        output = base_state.copy()
+        output['positions'] = perf_data['PositionDetails']
 
-    # 3. Create the Summary Dictionary
-    final_data = {
-        "PORTFOLIO_SUMMARY": {
-            "1. Overall Return (%)": perf_data['OverallReturnPct'],
-            "2. Return on Bought Assets (%)" : round(return_on_bought, 2),
-            "3. Total Equity": perf_data['TotalEquity'],
-            "4. Total P&L": perf_data['TotalGainLoss'],
-            "5. Market Value": perf_data['MarketValue'],
-            "6. Cash": round(output['cash'], 2)
-        },
-        **output
-    }
-    
-    # 4. Render the HTML Dashboard
-    # Instead of returning jsonify(final_data), we pass final_data to the template
+        # Calc ROI
+        invested_capital = 100000 - output['cash']
+        return_on_bought = 0.0
+        if invested_capital > 0:
+            return_on_bought = perf_data['TotalGainLoss'] * 100 / invested_capital
+
+        final_data = {
+            "PORTFOLIO_SUMMARY": {
+                "1. Overall Return (%)": perf_data['OverallReturnPct'],
+                "2. Return on Bought Assets (%)" : round(return_on_bought, 2),
+                "3. Total Equity": perf_data['TotalEquity'],
+                "4. Total P&L": perf_data['TotalGainLoss'],
+                "5. Market Value": perf_data['MarketValue'],
+                "6. Cash": round(output['cash'], 2)
+            },
+            **output
+        }
+        
+        # SAVE to Cache
+        PORTFOLIO_CACHE["data"] = final_data
+        PORTFOLIO_CACHE["timestamp"] = now
+
+    # 4. Render the page
     return render_template('dashboard.html', data=final_data)
-
+    
 @app.route('/run')
 def execute():
     # Check if the URL has ?force=true

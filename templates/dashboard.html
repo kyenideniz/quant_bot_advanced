@@ -217,35 +217,35 @@
                 
                 <div class="data-row">
                     <span class="data-label">Risk Cushion</span>
-                    <span class="data-value">{{ details.get('06. Risk Cushion', '0%') }}</span>
+                    <span class="data-value text-white">{{ details.get('06. Risk Cushion', '0%') }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Current ATR</span>
-                    <span class="data-value">{{ details.get('07. Current Atr', 0) }}</span>
+                    <span class="data-value text-white">{{ details.get('07. Current Atr', 0) }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Shares</span>
-                    <span class="data-value">{{ details.get('08. Shares', 0)|round(2) }}</span>
+                    <span class="data-value text-white">{{ details.get('08. Shares', 0)|round(2) }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Highest Price</span>
-                    <span class="data-value">${{ details.get('09. Highest Price', 0) }}</span>
+                    <span class="data-value text-white">${{ details.get('09. Highest Price', 0) }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Status</span>
-                    <span class="data-value text-info">{{ details.get('10. Status', 'N/A') }}</span>
+                    <span class="data-value text-white">{{ details.get('10. Status', 'N/A') }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Regime</span>
-                    <span class="data-value text-warning">{{ details.get('11. Market Regime', 'N/A') }}</span>
+                    <span class="data-value text-white">{{ details.get('11. Market Regime', 'N/A') }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Cost Basis</span>
-                    <span class="data-value">${{ details.get('13. Cost Basis', 0) }}</span>
+                    <span class="data-value text-white">${{ details.get('13. Cost Basis', 0) }}</span>
                 </div>
                 <div class="data-row">
                     <span class="data-label">Target Alloc</span>
-                    <span class="data-value text-warning">
+                    <span class="data-value text-white">
                         {% set tgt = data.get('config', {}).get(ticker, {}).get('Target', 0) %}
                         {{ (tgt * 100)|round(1) }}%
                     </span>

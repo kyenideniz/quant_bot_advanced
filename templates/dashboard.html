@@ -204,7 +204,7 @@
                         <span class="data-value text-white">${{ details.get('05. Entry Price', 0) }}</span>
                     </div>
 
-                    <div id="details-{{ ticker }}" class="d-none"> 
+                    <div id="details-{{ loop.index }}" class="d-none"> 
                         <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
                             
                             <div class="data-row">
@@ -246,7 +246,7 @@
                         </div>
                     </div> 
 
-                    <button class="btn btn-more" type="button" onclick="safeToggle('details-{{ ticker }}')">
+                    <button class="btn btn-more" type="button" onclick="safeToggle('details-{{ loop.index }}')">
                         More Details <i class="bi bi-chevron-down ms-1"></i>
                     </button>
 
@@ -335,6 +335,8 @@
 
     function safeToggle(elementId) {
         var element = document.getElementById(elementId);
+        if (!element) return; // FIX: Prevents crash if element not found
+        
         if (element.classList.contains('d-none')) {
             element.classList.remove('d-none');
         } else {

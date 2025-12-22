@@ -12,6 +12,9 @@ import requests
 from datetime import datetime
 import pytz
 
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
 # --- CONFIGURATION ---
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.options.mode.chained_assignment = None
@@ -185,7 +188,9 @@ def save_state(state):
     except Exception as e: print(f"❌ DB Save Error: {e}")
 
 def log_event(state, msg):
-    print(msg)
+    # Only print to console if running locally, otherwise just save to Firebase
+    if os.environ.get('FLASK_ENV') == 'development':
+        print(msg)
     state['logs'].append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {msg}")
 
 def retry_download(tickers, period):
@@ -777,7 +782,7 @@ def run_main_logic(force_run=False):
             log_event(state, log_msg)
             
     save_state(state)
-    return f"Logic Executed. Processed: {tickers_to_process}"
+    return f"Logic Executed. Processed {len(tickers_to_process)} assets."
 
 # --- 4. FLASK ROUTES ---
 # --- GLOBAL CACHE STORAGE ---
@@ -797,7 +802,7 @@ def home():
     
     if PORTFOLIO_CACHE["data"] and PORTFOLIO_CACHE["timestamp"]:
         age = (now - PORTFOLIO_CACHE["timestamp"]).total_seconds()
-        if age < 300:  # 300 seconds = 5 minutes
+        if age < 120:  # 300 seconds = 5 minutes
             is_cache_valid = True
             print(f"⚡ USING CACHE (Age: {age:.0f}s)")
 
@@ -846,13 +851,13 @@ def home():
     
 @app.route('/run')
 def execute():
-    # Check if the URL has ?force=true
     force = request.args.get('force') == 'true'
     try: 
-        # Pass the force flag to your logic
-        return jsonify({"status": "success", "msg": run_main_logic(force_run=force)})
+        # run_main_logic now returns a short string, not a giant object
+        result_msg = run_main_logic(force_run=force)
+        return jsonify({"status": "success", "msg": result_msg})
     except Exception as e: 
-        return jsonify({"status": "error", "msg": str(e)})
+        return jsonify({"status": "error", "msg": "Error occurred during execution"}) 
     
 @app.route('/force_rebalance')
 def force_rebalance():

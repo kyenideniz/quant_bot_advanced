@@ -11,6 +11,7 @@ import warnings
 import requests
 from datetime import datetime
 import pytz
+import logging
 
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 logging.getLogger('werkzeug').setLevel(logging.ERROR)

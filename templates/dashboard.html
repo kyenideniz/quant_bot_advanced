@@ -22,7 +22,7 @@
             --border-color: #334155;
         }
 
-        /* Prevent scrollbar flicker crash on Desktop */
+        /* SAFETY 1: Force scrollbar to prevent flicker crash */
         html { overflow-y: scroll; }
 
         body { 
@@ -30,6 +30,16 @@
             color: var(--text-main); 
             font-family: 'Inter', sans-serif; 
             padding-bottom: 50px;
+        }
+
+        /* --- GRID SYSTEM FIX (The Chrome Crash Solver) --- */
+        .positions-grid {
+            display: grid;
+            /* Auto-fit columns: min 350px wide, max 1 fraction of space */
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 1.5rem;
+            /* CRITICAL: align-items start prevents neighbors from stretching/crashing */
+            align-items: start; 
         }
 
         /* --- CARDS --- */
@@ -45,7 +55,6 @@
         .text-pos { color: var(--accent-success) !important; font-weight: 700; }
         .text-neg { color: var(--accent-danger) !important; font-weight: 700; }
         
-        /* Stop Price Styling */
         .text-stop { color: var(--accent-warning) !important; font-weight: 700; }
         .label-stop { color: var(--accent-warning) !important; opacity: 0.8; font-size: 0.8rem; text-transform: uppercase; }
 
@@ -64,6 +73,9 @@
             transition: all 0.2s;
         }
         .btn-more:hover { background-color: rgba(255,255,255,0.1); color: white; }
+
+        /* Remove focus glow to reduce rendering load */
+        .btn:focus, .btn:active { outline: none !important; box-shadow: none !important; }
 
         .btn-primary-custom {
             background-color: var(--accent-primary);
@@ -100,12 +112,10 @@
         .data-label { color: rgba(255,255,255,0.6); font-size: 0.9rem; }
         .data-value { color: var(--bg-card); font-weight: 600; font-size: 1rem; }
         
-        /* Table Styles */
         .table { color: var(--text-black); }
         .table-custom th { background-color: var(--bg-card); color: var(--text-muted); border-bottom: 1px solid var(--border-color); }
         .table-custom td { border-bottom: 1px solid var(--border-color); color: var(--bg-card); background-color: var(--bg-card);}
         
-        /* Console */
         .console-box { 
             height: 350px; overflow-y: scroll; background-color: #020617; 
             padding: 20px; font-family: 'Courier New', monospace; font-size: 0.85rem; 
@@ -169,93 +179,91 @@
 
     <h6 class="text-orange text-uppercase mb-3 ms-1 fw-bold">Active Positions</h6>
     
-    <div class="row g-4 mb-5">
+    <div class="positions-grid mb-5">
         {% for ticker, details in data.get('positions', {}).items() %}
         {% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
         
-        <div class="col-12 col-md-6 col-xl-4">
-            <div class="card">
-                <div class="card-body p-4">
-                    
-                    <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
-                        <h2 class="fw-bold m-0 {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">{{ ticker }}</h2>
-                        <span class="badge {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">LONG</span>
-                    </div>
+        <div class="card">
+            <div class="card-body p-4">
+                
+                <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+                    <h2 class="fw-bold m-0 {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">{{ ticker }}</h2>
+                    <span class="badge {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">LONG</span>
+                </div>
 
-                    <div class="data-row">
-                        <span class="data-label">Return %</span>
-                        <span class="data-value {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
-                            {{ details.get('01. Return %', 0) }}%
-                        </span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Gain/Loss</span>
-                        <span class="data-value {% if details.get('02. Gain/Loss', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
-                            ${{ details.get('02. Gain/Loss', 0) }}
-                        </span>
-                    </div>
-                    <div class="data-row">
-                        <span class="data-label">Current Price</span>
-                        <span class="data-value text-white">${{ details.get('03. Current Price', 0) }}</span>
-                    </div>
-                    <div class="data-row">
-                        <span class="label-stop">Stop Price</span>
-                        <span class="text-stop">${{ details.get('04. Stop Price', 0) }}</span>
-                    </div>
-                    <div class="data-row mb-3">
-                        <span class="data-label">Entry Price</span>
-                        <span class="data-value text-white">${{ details.get('05. Entry Price', 0) }}</span>
-                    </div>
+                <div class="data-row">
+                    <span class="data-label">Return %</span>
+                    <span class="data-value {% if details.get('01. Return %', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                        {{ details.get('01. Return %', 0) }}%
+                    </span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Gain/Loss</span>
+                    <span class="data-value {% if details.get('02. Gain/Loss', 0) >= 0 %}text-pos{% else %}text-neg{% endif %}">
+                        ${{ details.get('02. Gain/Loss', 0) }}
+                    </span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Current Price</span>
+                    <span class="data-value text-white">${{ details.get('03. Current Price', 0) }}</span>
+                </div>
+                <div class="data-row">
+                    <span class="label-stop">Stop Price</span>
+                    <span class="text-stop">${{ details.get('04. Stop Price', 0) }}</span>
+                </div>
+                <div class="data-row mb-3">
+                    <span class="data-label">Entry Price</span>
+                    <span class="data-value text-white">${{ details.get('05. Entry Price', 0) }}</span>
+                </div>
 
-                    <div id="details-{{ loop.index }}" class="d-none"> 
-                        <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
-                            
-                            <div class="data-row">
-                                <span class="data-label">Risk Cushion</span>
-                                <span class="data-value text-white">{{ details.get('06. Risk Cushion', '0%') }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Current ATR</span>
-                                <span class="data-value text-white">{{ details.get('07. Current Atr', 0) }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Shares</span>
-                                <span class="data-value text-white">{{ details.get('08. Shares', 0)|round(2) }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Highest Price</span>
-                                <span class="data-value text-white">${{ details.get('09. Highest Price', 0) }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Status</span>
-                                <span class="data-value text-white">{{ details.get('10. Status', 'N/A') }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Regime</span>
-                                <span class="data-value text-white">{{ details.get('11. Market Regime', 'N/A') }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Cost Basis</span>
-                                <span class="data-value text-white">${{ details.get('13. Cost Basis', 0) }}</span>
-                            </div>
-                            <div class="data-row">
-                                <span class="data-label">Target Alloc</span>
-                                <span class="data-value text-white">
-                                    {% set tgt = data.get('config', {}).get(ticker, {}).get('Target', 0) %}
-                                    {{ (tgt * 100)|round(1) }}%
-                                </span>
-                            </div>
-
+                <div id="details-{{ loop.index }}" class="d-none"> 
+                    <div class="p-3 mb-3 rounded" style="background: rgba(0,0,0,0.2);">
+                        
+                        <div class="data-row">
+                            <span class="data-label">Risk Cushion</span>
+                            <span class="data-value text-white">{{ details.get('06. Risk Cushion', '0%') }}</span>
                         </div>
-                    </div> 
+                        <div class="data-row">
+                            <span class="data-label">Current ATR</span>
+                            <span class="data-value text-white">{{ details.get('07. Current Atr', 0) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Shares</span>
+                            <span class="data-value text-white">{{ details.get('08. Shares', 0)|round(2) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Highest Price</span>
+                            <span class="data-value text-white">${{ details.get('09. Highest Price', 0) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Status</span>
+                            <span class="data-value text-white">{{ details.get('10. Status', 'N/A') }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Regime</span>
+                            <span class="data-value text-white">{{ details.get('11. Market Regime', 'N/A') }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Cost Basis</span>
+                            <span class="data-value text-white">${{ details.get('13. Cost Basis', 0) }}</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Target Alloc</span>
+                            <span class="data-value text-white">
+                                {% set tgt = data.get('config', {}).get(ticker, {}).get('Target', 0) %}
+                                {{ (tgt * 100)|round(1) }}%
+                            </span>
+                        </div>
 
-                    <button class="btn btn-more" type="button" onclick="safeToggle('details-{{ loop.index }}')">
-                        More Details <i class="bi bi-chevron-down ms-1"></i>
-                    </button>
-
+                    </div>
                 </div> 
-            </div>
-        </div> 
+
+                <button class="btn btn-more" type="button" onclick="safeToggle('details-{{ loop.index }}')">
+                    More Details <i class="bi bi-chevron-down ms-1"></i>
+                </button>
+
+            </div> 
+        </div>
         
         {% endif %}
         {% endfor %}
@@ -338,7 +346,7 @@
 
     function safeToggle(elementId) {
         var element = document.getElementById(elementId);
-        if (!element) return; // Prevent crash if element is missing
+        if (!element) return; // FIX: Prevents crash if element is missing
         
         if (element.classList.contains('d-none')) {
             element.classList.remove('d-none');

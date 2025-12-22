@@ -878,6 +878,10 @@ def force_rebalance():
         })
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)})
-        
+
+@app.route('/wake')
+def wake():
+    return "", 200
+    
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

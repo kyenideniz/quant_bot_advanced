@@ -22,6 +22,9 @@
             --border-color: #334155;
         }
 
+        /* Prevent scrollbar flicker crash on Desktop */
+        html { overflow-y: scroll; }
+
         body { 
             background-color: var(--bg-body); 
             color: var(--text-main); 
@@ -171,7 +174,7 @@
         {% if details.get('01. Status') != 'NEUTRAL' and details.get('10. Status') != 'NEUTRAL' %}
         
         <div class="col-12 col-md-6 col-xl-4">
-            <div class="card h-100">
+            <div class="card">
                 <div class="card-body p-4">
                     
                     <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
@@ -335,7 +338,7 @@
 
     function safeToggle(elementId) {
         var element = document.getElementById(elementId);
-        if (!element) return; // FIX: Prevents crash if element not found
+        if (!element) return; // Prevent crash if element is missing
         
         if (element.classList.contains('d-none')) {
             element.classList.remove('d-none');
